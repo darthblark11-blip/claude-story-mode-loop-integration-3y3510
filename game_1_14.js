@@ -1960,10 +1960,11 @@ function updateGrenadePickups() {
 
 function clearAllBlood() {
     bloodChunkUse = {};
+    bloodBytes = 0;
     for (const pg of bloodSurfacePool) pg.remove();
     bloodSurfacePool.length = 0;
     for (let key in bloodChunks) {
-        bloodChunks[key].remove(); // Destroys the p5.Graphics object
+        bloodChunks[key].pg.remove(); // Destroys the p5.Graphics object
     }
     bloodChunks = {}; // Resets the dictionary
 }
@@ -2305,8 +2306,10 @@ viewBottom = camY + height / zoom + shakePad;
       sfx.charge();
   }
 
-  updateActiveWorld();
+  // Residency first: chunk loads and evictions rewrite buildings[], so culling
+  // before them would cull against a list that is about to be replaced.
   manageChunkMemory();
+  updateActiveWorld();
   // The clock advances before anything reads it, so the sun and the directive
   // meters both see the same delta on the same frame.
   updateWorldClock();
@@ -4887,80 +4890,123 @@ class Splatter {
 //  blood stays permanent everywhere you are still fighting and is reclaimed
 //  behind you.
 // ###########################################################################
-const BLOOD_CHUNK_LIMIT = 8;      // live surfaces; 8 x 1024 units covers the fight
-let bloodChunkUse = {};           // key -> frameCount when last touched
-let bloodSurfacePool = [];        // retired buffers, cleared and reused
+// Blood is permanent. What is not permanent is paying 4 MB for a chunk that
+// holds one splatter.
+//
+// The original code allocated a full CHUNK_SIZE surface the moment anything
+// bled anywhere in a 1024-unit square, at the sketch's pixel density -- 16 MB
+// each on a 2x display, 36 MB on a 3x -- and never released any of it. Fourteen
+// splatters measured 240 MB, which is well past what a phone's compositor will
+// hold, and past it the browser starts evicting and re-uploading canvas layers
+// every frame.
+//
+// Surfaces now cover only the ground that has actually been painted, and grow
+// outward in 256-pixel steps as the fighting spreads. A skirmish in one corner
+// of a chunk costs a 256x256 buffer -- 262 KB, sixteen times less -- and a
+// chunk that genuinely gets soaked end to end pays the full price it always
+// did. Nothing is ever thrown away below the budget, so blood you spilled an
+// hour ago is still there when you walk back.
+const BLOOD_GROW = 256;                     // buffers grow on this lattice
+const BLOOD_BUDGET_BYTES = 96 * 1024 * 1024;  // backstop, not a routine limit
+let bloodChunkUse = {};                     // key -> frameCount when last painted
+let bloodSurfacePool = [];                  // retired buffers, cleared and reused
+let bloodBytes = 0;
 
-function acquireBloodChunk(key) {
-  let pg = bloodChunks[key];
-  if (pg) { bloodChunkUse[key] = frameCount; return pg; }
+function bloodSurfaceBytes(pg) { return pg.width * pg.height * 4; }
 
-  pg = bloodSurfacePool.pop();
-  if (pg) {
-    pg.clear();                   // reuse: no allocation, no GC
-  } else {
-    pg = createGraphics(CHUNK_SIZE, CHUNK_SIZE);
-    pg.pixelDensity(1);
+function newBloodSurface(w, h) {
+  for (let i = 0; i < bloodSurfacePool.length; i++) {
+    const q = bloodSurfacePool[i];
+    if (q.width === w && q.height === h) {
+      bloodSurfacePool.splice(i, 1);
+      q.clear(); q.noStroke();
+      return q;
+    }
   }
-  pg.noStroke();
-  // Painted bounds, in buffer pixels. A blood surface is 1024x1024 but a fight
-  // marks a few hundred pixels of it; blitting the whole thing every frame
-  // measured 4.02 ms of a 25 ms frame. Tracking what was actually stamped lets
-  // the draw pass copy only that sub-rectangle.
-  pg.__x0 = 1e9; pg.__y0 = 1e9; pg.__x1 = -1e9; pg.__y1 = -1e9;
-  bloodChunks[key] = pg;
-  bloodChunkUse[key] = frameCount;
-  trimBloodChunks();
+  const pg = createGraphics(w, h);
+  pg.pixelDensity(1);                       // 1 texel per world unit is already
+  pg.noStroke();                            // finer than the camera resolves
   return pg;
 }
 
-// Grow a surface's painted bounds around a stamp at (rx, ry) of radius r.
-function markBlood(pg, rx, ry, r) {
-  if (rx - r < pg.__x0) pg.__x0 = rx - r;
-  if (ry - r < pg.__y0) pg.__y0 = ry - r;
-  if (rx + r > pg.__x1) pg.__x1 = rx + r;
-  if (ry + r > pg.__y1) pg.__y1 = ry + r;
-  if (pg.__x0 < 0) pg.__x0 = 0;
-  if (pg.__y0 < 0) pg.__y0 = 0;
-  if (pg.__x1 > CHUNK_SIZE) pg.__x1 = CHUNK_SIZE;
-  if (pg.__y1 > CHUNK_SIZE) pg.__y1 = CHUNK_SIZE;
+function releaseBloodSurface(pg) {
+  if (bloodSurfacePool.length < 4) bloodSurfacePool.push(pg);
+  else pg.remove();
 }
 
-// Retire the least recently stamped surfaces back to the pool. Never touches
-// the chunk the player is standing in, however stale its timestamp.
-function trimBloodChunks() {
-  const keys = Object.keys(bloodChunks);
-  if (keys.length <= BLOOD_CHUNK_LIMIT) return;
-  const hereX = player ? Math.floor(player.x / CHUNK_SIZE) : 0;
-  const hereY = player ? Math.floor(player.y / CHUNK_SIZE) : 0;
-  const here = hereX + "," + hereY;
-  keys.sort((a, b) => (bloodChunkUse[a] || 0) - (bloodChunkUse[b] || 0));
-  for (let i = 0; i < keys.length - BLOOD_CHUNK_LIMIT; i++) {
-    const k = keys[i];
-    if (k === here) continue;
-    const pg = bloodChunks[k];
+// Return a surface for `key` that is guaranteed to cover the box (x0,y0)-(x1,y1)
+// given in chunk-local pixels, growing or creating it as needed.
+function acquireBloodChunk(key, x0, y0, x1, y1) {
+  let e = bloodChunks[key];
+
+  // Requested region, clamped to the chunk and snapped out to the grow lattice.
+  let rx0 = Math.max(0, Math.floor(x0 / BLOOD_GROW) * BLOOD_GROW);
+  let ry0 = Math.max(0, Math.floor(y0 / BLOOD_GROW) * BLOOD_GROW);
+  let rx1 = Math.min(CHUNK_SIZE, Math.ceil(x1 / BLOOD_GROW) * BLOOD_GROW);
+  let ry1 = Math.min(CHUNK_SIZE, Math.ceil(y1 / BLOOD_GROW) * BLOOD_GROW);
+  if (rx1 <= rx0) rx1 = Math.min(CHUNK_SIZE, rx0 + BLOOD_GROW);
+  if (ry1 <= ry0) ry1 = Math.min(CHUNK_SIZE, ry0 + BLOOD_GROW);
+
+  if (e) {
+    // Already covered: nothing to do.
+    if (rx0 >= e.bx && ry0 >= e.by &&
+        rx1 <= e.bx + e.pg.width && ry1 <= e.by + e.pg.height) {
+      bloodChunkUse[key] = frameCount;
+      return e;
+    }
+    // Grow to the union and carry the existing paint across.
+    const ux0 = Math.min(rx0, e.bx), uy0 = Math.min(ry0, e.by);
+    const ux1 = Math.max(rx1, e.bx + e.pg.width);
+    const uy1 = Math.max(ry1, e.by + e.pg.height);
+    const pg = newBloodSurface(ux1 - ux0, uy1 - uy0);
+    pg.image(e.pg, e.bx - ux0, e.by - uy0);
+    bloodBytes -= bloodSurfaceBytes(e.pg);
+    releaseBloodSurface(e.pg);
+    e.pg = pg; e.bx = ux0; e.by = uy0;
+    bloodBytes += bloodSurfaceBytes(pg);
+    bloodChunkUse[key] = frameCount;
+    trimBloodBudget(key);
+    return e;
+  }
+
+  const pg = newBloodSurface(rx1 - rx0, ry1 - ry0);
+  e = { pg: pg, bx: rx0, by: ry0 };
+  bloodChunks[key] = e;
+  bloodBytes += bloodSurfaceBytes(pg);
+  bloodChunkUse[key] = frameCount;
+  trimBloodBudget(key);
+  return e;
+}
+
+// Only ever runs if a session paints an implausible amount of ground. Drops the
+// least recently bled surfaces first and never the one being painted right now.
+function trimBloodBudget(keepKey) {
+  if (bloodBytes <= BLOOD_BUDGET_BYTES) return;
+  const keys = Object.keys(bloodChunks)
+    .sort((a, b) => (bloodChunkUse[a] || 0) - (bloodChunkUse[b] || 0));
+  for (const k of keys) {
+    if (bloodBytes <= BLOOD_BUDGET_BYTES * 0.85) break;
+    if (k === keepKey) continue;
+    const ent = bloodChunks[k];
+    bloodBytes -= bloodSurfaceBytes(ent.pg);
+    ent.pg.remove();
     delete bloodChunks[k];
     delete bloodChunkUse[k];
-    if (pg) { if (bloodSurfacePool.length < 3) bloodSurfacePool.push(pg); else pg.remove(); }
   }
 }
 
 function drawBloodChunks() {
     for (let key in bloodChunks) {
-        const pg = bloodChunks[key];
-        if (!pg || !(pg.__x1 > pg.__x0)) continue;      // nothing stamped yet
-
+        const e = bloodChunks[key];
+        if (!e) continue;
         const coords = key.split(",");
-        const worldX = parseInt(coords[0]) * CHUNK_SIZE;
-        const worldY = parseInt(coords[1]) * CHUNK_SIZE;
-
-        // Cull and blit against the painted region, not the whole 1024 square.
-        const sx = pg.__x0, sy = pg.__y0;
-        const sw = pg.__x1 - sx, sh = pg.__y1 - sy;
-        const wx = worldX + sx, wy = worldY + sy;
-        if (wx > viewRight || wx + sw < viewLeft)  continue;
-        if (wy > viewBottom || wy + sh < viewTop)  continue;
-        image(pg, wx, wy, sw, sh, sx, sy, sw, sh);
+        const wx = parseInt(coords[0]) * CHUNK_SIZE + e.bx;
+        const wy = parseInt(coords[1]) * CHUNK_SIZE + e.by;
+        // The surface already covers only painted ground, so its own extent is
+        // the cull rect.
+        if (wx > viewRight  || wx + e.pg.width  < viewLeft) continue;
+        if (wy > viewBottom || wy + e.pg.height < viewTop)  continue;
+        image(e.pg, wx, wy);
     }
 }
 
@@ -4993,16 +5039,17 @@ function spawnSplatter(x, y, t = "HIDDEN", col = null) {
         for (let cy = minCY; cy <= maxCY; cy++) {
             let key = cx + "," + cy;
 
-            let pg = acquireBloodChunk(key);
             let relX = x - (cx * CHUNK_SIZE);
             let relY = y - (cy * CHUNK_SIZE);
+            const e = acquireBloodChunk(key, relX - maxSpread, relY - maxSpread,
+                                             relX + maxSpread, relY + maxSpread);
+            const pg = e.pg;
 
             if (t === "SCORCH") pg.fill(15, 15, 15, 220);
             else pg.fill(col || color(90, 0, 0, 220));
 
             for (let b of blobs) {
-                pg.ellipse(relX + b.ox, relY + b.oy, b.sz);
-                markBlood(pg, relX + b.ox, relY + b.oy, b.sz);
+                pg.ellipse(relX - e.bx + b.ox, relY - e.by + b.oy, b.sz);
             }
         }
     }
@@ -5448,12 +5495,32 @@ function manageChunkMemory() {
 
 
 
+const CORPSE_GIB_DEATHS = [2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15];
+
+// How many intact bodies may lie within one 72-unit patch of ground before the
+// ones underneath are pressed into the permanent blood layer. A body is roughly
+// 50 units across, so a cell this size holds bodies that are genuinely on top
+// of one another rather than merely nearby.
+const CORPSE_STACK_LIMIT = 40;
+const CORPSE_STACK_CELL  = 72;
+
 class Corpse {
   constructor(x, y, mA, aA, sC, pC, dT, hA, dec, cW, bA, eT, bW, bH) { 
     this.eT = eT; this.x = x; this.y = y; 
     if (eT === "ARMORED" || eT === "ARMORED_STANDARD" || eT === "ALIEN_GATOR") { this.mA = mA; this.aA = aA; } else { this.mA = mA + PI; this.aA = aA + PI; }
     this.sC = sC; this.pC = pC; this.dT = dT; this.hA = hA; this.bA = bA; this.dec = dec; this.cW = cW; this.bW = bW; this.bH = bH; 
-    this.bT = 120; this.fP = 0; this.sep = 0; this.bits = []; this.stopMotionTimer = 156; 
+    this.bT = 120; this.fP = 0; this.sep = 0; this.bits = []; this.stopMotionTimer = 156;
+    this.bornAt = frameCount;
+    // Is this a body lying on the ground, or is it wreckage?
+    //
+    // Everything in GIB_DEATHS comes apart: 2/3/4/6/8 separate along `sep`,
+    // 5 scatters skull, ribcage, pelvis and bone, 9 throws skull fragments,
+    // 10/11/15 break into torso and limbs, 12 is the kamikaze, 13 is a sword
+    // split and 14 halves the body. None of those may ever be culled -- they
+    // are the gore and the skeletal matter. What is left (0, 1, 7) is an
+    // intact body lying down, and only those are eligible when a pile gets
+    // deeper than anything can be seen through.
+    this.isIntactBody = CORPSE_GIB_DEATHS.indexOf(dT) === -1; 
     this.bloodTimer = (dT === 5 || dT === 7 || dT === 8 || dT === 9 || dT === 10 || dT === 11 || dT === 13 || dT === 14) ? 180 : 0; 
 
     if (dT === 14) { this.splitA = bA; this.lH = { x: 0, y: 0, vx: cos(this.splitA - HALF_PI) * 2, vy: sin(this.splitA - HALF_PI) * 2 }; this.rH = { x: 0, y: 0, vx: cos(this.splitA + HALF_PI) * 2, vy: sin(this.splitA + HALF_PI) * 2 }; }
@@ -5771,19 +5838,21 @@ function stampCorpse(c) {
         for (let cy = minCY; cy <= maxCY; cy++) {
             let key = cx + "," + cy;
 
-            let pg = acquireBloodChunk(key);
-            
-            // Shift coordinates into local chunk space
+            const lx = c.x - (cx * CHUNK_SIZE);
+            const ly = c.y - (cy * CHUNK_SIZE);
+            // A stamped body reaches well past its origin: limbs, the pool
+            // under it, and whatever decals it carries.
+            const e = acquireBloodChunk(key, lx - maxSpread, ly - maxSpread,
+                                             lx + maxSpread, ly + maxSpread);
+
+            // Shift coordinates into the surface's own space
             let oldX = c.x;
             let oldY = c.y;
-            c.x = oldX - (cx * CHUNK_SIZE);
-            c.y = oldY - (cy * CHUNK_SIZE);
-            
+            c.x = lx - e.bx;
+            c.y = ly - e.by;
+
             // Draw directly to the buffer instead of the screen
-            c.show(pg);
-            // A stamped corpse reaches well past its origin -- limbs, the pool
-            // under it, and whatever decals it carries.
-            markBlood(pg, c.x, c.y, 90);
+            c.show(e.pg);
 
             // Restore actual world coordinates
             c.x = oldX;
@@ -5795,29 +5864,79 @@ function stampCorpse(c) {
 
 
 function updateCorpses() {
+  // Pass 1: advance and retire. Backwards, because it splices.
   for (let i = corpses.length - 1; i >= 0; i--) {
       let c = corpses[i];
-      
+
       if (doTick) {
           if (!c.isStatic && inView(c.x, c.y, 800)) {
               c.update();
-              
+
               let isDone = (c.bloodTimer <= 0 && c.stopMotionTimer <= 0 && c.smokeTimer <= 0 && c.bT <= 0);
               if (c.dT === 12 && !c.exploded) isDone = false; // Kamikaze exception
-              
+
               if (isDone && c.fP >= 1) {
-                  c.isStatic = true; 
+                  c.isStatic = true;
                   stampCorpse(c);         // Stamp it permanently to the ground chunk
                   corpses.splice(i, 1);   // Delete the object to save CPU & GPU
                   continue;               // Skip the rest of the loop
               }
           }
       }
-      
-      // If it's still animating, draw it normally on the screen layer
-      if (inView(c.x, c.y, 150)) {
-          c.show();
-      }
+  }
+
+  // Pass 2: draw oldest first, so the newest body lands on top of the pile.
+  //
+  // This used to draw inside the backwards pass, which meant the array was
+  // walked from the newest corpse to the oldest and the OLDEST was therefore
+  // painted last -- the first man down stayed on top and everyone who fell
+  // after him was buried underneath. Forwards is the natural order: whoever
+  // dropped most recently is the one lying on the heap.
+  for (let i = 0; i < corpses.length; i++) {
+      const c = corpses[i];
+      if (inView(c.x, c.y, 150)) c.show();
+  }
+
+  if (doTick) cullCorpseStacks();
+}
+
+// Press the buried bodies into the ground.
+//
+// A body underneath forty others is not visible and never will be, so it is
+// costing update and draw time to be hidden. Rather than deleting it, it goes
+// through the same stampCorpse() path a body takes when it settles normally:
+// it becomes part of the permanent blood layer. Nothing vanishes -- the ground
+// keeps the mark, the pile keeps its mass, and only the object goes away.
+//
+// Gore and skeletal matter are exempt. Those are the pieces worth looking at.
+function cullCorpseStacks() {
+  if (corpses.length <= CORPSE_STACK_LIMIT) return;   // cheap out on small fights
+  if (frameCount % 20 !== 0) return;                  // and it is not urgent
+
+  const cells = new Map();
+  for (let i = 0; i < corpses.length; i++) {
+      const c = corpses[i];
+      if (!c.isIntactBody) continue;
+      const k = Math.floor(c.x / CORPSE_STACK_CELL) + ',' + Math.floor(c.y / CORPSE_STACK_CELL);
+      let list = cells.get(k);
+      if (!list) { list = []; cells.set(k, list); }
+      list.push(i);
+  }
+
+  const doomed = new Set();
+  for (const list of cells.values()) {
+      if (list.length <= CORPSE_STACK_LIMIT) continue;
+      // corpses[] is already in the order they fell, so the head of this list
+      // is the deepest body in the pile.
+      const excess = list.length - CORPSE_STACK_LIMIT;
+      for (let n = 0; n < excess; n++) doomed.add(list[n]);
+  }
+  if (!doomed.size) return;
+
+  for (let i = corpses.length - 1; i >= 0; i--) {
+      if (!doomed.has(i)) continue;
+      stampCorpse(corpses[i]);
+      corpses.splice(i, 1);
   }
 }
 
@@ -12824,8 +12943,23 @@ class ChunkManager {
     }
     buildings   = solids;
     parkingCars = cars;
-    activeBuildings = [];         // force updateActiveWorld() to recull
+
+    // Recull immediately rather than blanking the array and hoping something
+    // refills it later in the frame.
+    //
+    // This used to set activeBuildings = [] and lastActiveUpdate = 0, leaving
+    // the recull to the next updateActiveWorld(). But updateActiveWorld() runs
+    // BEFORE manageChunkMemory() in draw(), so on every frame where chunk
+    // residency changed -- which is every time you cross a chunk border, i.e.
+    // constantly while walking -- the array was emptied after the cull had
+    // already run. Everything that draws from it (buildings, their shadows,
+    // ground lots, pads, biome props, parked cars, street lights) then drew
+    // nothing at all for that frame. Measured while walking: 13 of 203 frames
+    // blanked, each exactly one frame long. That is the buildings blinking in
+    // and out.
     lastActiveUpdate = 0;
+    activeBuildings = [];
+    updateActiveWorld();
   }
 
   // -- Ground blit ----------------------------------------------------------
