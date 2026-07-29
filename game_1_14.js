@@ -1675,6 +1675,43 @@ function drawBuildings() {
     // membrane seams running one way only. Three concentric rectangles and a
     // dot is what made every building in the city look like the same tile.
     const bIc = Array.isArray(bI) ? bI : [bI, bI, bI];
+
+    // --- Mass ------------------------------------------------------------
+    // A top-down camera sees roofs and nothing else, so a block drawn as flat
+    // rectangles gives the eye no way to tell where one building stops and the
+    // next starts -- neighbouring roofs of similar colour fuse into a single
+    // shape, and anything cast beside them reads as yet another building.
+    //
+    // Extruding the two walls that face away from the sun fixes that outright:
+    // every footprint gets an unambiguous silhouette and a base that sits ON
+    // the ground. The roof stays exactly on the collision rect, so this changes
+    // nothing about where the building actually blocks movement or bullets.
+    const rise = b.isBlockBuilding ? buildingRise(b) : 0;
+    const wx = LIGHT_DX * rise, wy = LIGHT_DY * rise;
+    const x0 = b.x - b.w / 2, y0 = b.y - b.h / 2;
+    const x1 = b.x + b.w / 2, y1 = b.y + b.h / 2;
+    const floors = Math.max(2, Math.round(rise / 6));
+
+    noStroke();
+    if (rise > 0) {
+      // South face is turned most directly away from the light, so it is the
+      // darkest. Neither face is a straight multiply: a small ambient term
+      // keeps the walls off pure black in the night biomes, where bM is
+      // already dark to begin with.
+      fill(bM[0] * 0.40 + 5, bM[1] * 0.40 + 6, bM[2] * 0.40 + 10);
+      quad(x0, y1, x1, y1, x1 + wx, y1 + wy, x0 + wx, y1 + wy);
+      fill(bM[0] * 0.56 + 7, bM[1] * 0.56 + 8, bM[2] * 0.56 + 13);
+      quad(x1, y0, x1 + wx, y0 + wy, x1 + wx, y1 + wy, x1, y1);
+      // Storey lines — the cheapest possible cue that the wall has height.
+      stroke(0, 0, 0, 50); strokeWeight(1);
+      for (let f = 1; f < floors; f++) {
+        const t = f / floors;
+        line(x0 + wx * t, y1 + wy * t, x1 + wx * t, y1 + wy * t);
+        line(x1 + wx * t, y0 + wy * t, x1 + wx * t, y1 + wy * t);
+      }
+      noStroke();
+    }
+
     fill(bM[0], bM[1], bM[2]);
     stroke(currentLevel === 1 || currentLevel === 3 ? 100 : 10); strokeWeight(2);
     rect(b.x - b.w / 2, b.y - b.h / 2, b.w, b.h);
@@ -1708,6 +1745,18 @@ function drawBuildings() {
     fill(0, 0, 0, 34);
     ellipse(b.x + (wv - 0.5) * b.w * 0.5, b.y + (0.5 - wv) * b.h * 0.4, b.w * 0.34, b.h * 0.26);
     ellipse(b.x - (wv - 0.5) * b.w * 0.34, b.y + (wv - 0.5) * b.h * 0.5, b.w * 0.2, b.h * 0.17);
+
+    // Roof cap. A lit rim on the two edges the sun reaches and a hard break
+    // where the roof rolls over onto the extruded walls. Two strokes, and the
+    // volume closes: without them the roof and the walls read as separate
+    // flat shapes that happen to touch.
+    stroke(255, 255, 255, 44); strokeWeight(1.6);
+    line(x0, y0, x1, y0);
+    line(x0, y0, x0, y1);
+    stroke(0, 0, 0, 96); strokeWeight(1.6);
+    line(x1, y0, x1, y1);
+    line(x0, y1, x1, y1);
+    noStroke();
 
     if (currentLevel === 1 || currentLevel === 2) {
         if (b.details) {
@@ -2279,9 +2328,10 @@ viewBottom = camY + height / zoom + shakePad;
       c.show();
   }
   
-  if (typeof drawBuildingShadows === 'function') drawBuildingShadows(); 
-
-  
+  // The shadow pass used to run here as well as immediately before
+  // drawBuildings(). Two passes over the same casters composited their alpha
+  // (82 -> ~146 effective), which is what turned every cast shadow into a hard
+  // near-black slab reading as a second, overlapping building. One pass only.
   if (inOverworldView) {
       for (let c of townCitizens) {
           if (doTick) c.update();
@@ -10308,7 +10358,15 @@ const CHUNK_TEX      = 320;    // baked terrain buffer: 3.75 world units per tex
 const CHUNK_BASE     = 200;    // resolution of the per-pixel noise pass only
 const CHUNK_LOAD_R   = 2;      // chunks loaded in each direction -> 5x5 = 25 live
 const CHUNK_KEEP_R   = 3;      // evict beyond this ring
-const CHUNK_BAKE_CAP = 1;      // max terrain bakes per frame (prevents hitching)
+// Terrain bakes are amortised across frames so a residency change never costs
+// one long hitch. The old cap was a flat 1 per frame, which meant a full ring
+// took 25 frames to resolve and every one of those frames drew flat fill where
+// the detail had not landed yet -- the strobing. A short wall-clock budget
+// spends whatever slack the frame has instead, and the visible chunks are
+// exempt from it entirely (see ChunkManager.ensureVisibleBaked).
+const CHUNK_BAKE_CAP = 4;      // max terrain bakes per frame
+const CHUNK_BAKE_MS  = 7;      // ...or until this much of the frame is gone
+const CHUNK_TEX_CACHE = 40;    // retired terrain buffers kept for backtracking
 const NOISE_GRID     = 4;      // noise sampled every Nth pixel, then interpolated
 const BIOME_SEED     = 1337;
 
@@ -10813,6 +10871,29 @@ function buildAnchorStructures(biome) {
 // existing collision / AI / bullet code works untouched) plus lightweight
 // decor (kept out of `buildings` so it never costs a collision test).
 // ---------------------------------------------------------------------------
+// Rejection test against everything already placed in a chunk.
+//
+// The open biomes route every solid through makeLattice(), which cannot hand
+// out the same cell twice. The city layouts have no lattice — their buildings
+// come out of a subdivided block, which genuinely cannot self-intersect — but
+// that guarantee only ever covered the buildings. Every solid dropped in
+// afterwards (dumpsters, the ruined vehicle) was placed by uniform random draw
+// with no test, so a steady fraction of them materialised inside a building:
+// two solids sharing floor space, which from above is a single fused blob.
+//
+// Lots are not blockers — a park is somewhere you stand. Ponds are, because a
+// dumpster in a pond is the same artefact wearing a different colour.
+function solidsClearAt(list, x, y, w, h, pad) {
+  const p = pad || 0;
+  for (let i = 0; i < list.length; i++) {
+    const o = list[i];
+    if (o.isGrassLot && !o.isPond) continue;
+    if (Math.abs(x - o.x) < (w + (o.w || 0)) / 2 + p &&
+        Math.abs(y - o.y) < (h + (o.h || 0)) / 2 + p) return false;
+  }
+  return true;
+}
+
 function generateChunkContent(biome, cx, cy) {
   // Inside the authored core the hand-placed map IS the world. The chunk still
   // bakes its terrain there — that is what makes the streets and textures run
@@ -10862,6 +10943,8 @@ function generateChunkContent(biome, cx, cy) {
       const bsx      = ox + 120 + walkW;
       const bsy      = oy + 120 + walkW;
 
+      const clearOf = solidsClearAt;
+
       // Districts are noise-driven so the city has coherent neighbourhoods
       // that read at a distance rather than random per-block noise.
       const zoneN = bnoise(biome, ox, oy, 0.00035);
@@ -10881,9 +10964,25 @@ function generateChunkContent(biome, cx, cy) {
         }
         let trees = rngInt(rng, 4, 10);
         for (let i = 0; i < trees; i++) {
-          // Trees are static: bake them so their canopy and shadow are free
-          decorBake.push({ t: "TREE", x: ox + rngRange(rng, 200, 1000), y: oy + rngRange(rng, 200, 1000),
-                           s: rngRange(rng, 0.8, 1.5), r: rng() * TWO_PI, c: rng() });
+          // Trees are static: bake them so their canopy and shadow are free.
+          // Spaced off each other and out of the pond -- overlapping canopies
+          // bake into one shapeless dark mass, and a tree standing in water is
+          // the same placement bug the dumpsters had.
+          for (let att = 0; att < 12; att++) {
+            const tx = ox + rngRange(rng, 200, 1000);
+            const ty = oy + rngRange(rng, 200, 1000);
+            if (!clearOf(solid, tx, ty, 70, 70, 12)) continue;
+            let spaced = true;
+            for (let d2 = 0; d2 < decorBake.length; d2++) {
+              const o = decorBake[d2];
+              if (o.t !== "TREE") continue;
+              if (Math.abs(tx - o.x) < 82 && Math.abs(ty - o.y) < 82) { spaced = false; break; }
+            }
+            if (!spaced) continue;
+            decorBake.push({ t: "TREE", x: tx, y: ty,
+                             s: rngRange(rng, 0.8, 1.5), r: rng() * TWO_PI, c: rng() });
+            break;
+          }
         }
       } else if (zone === "COMMERCIAL" && rng() > 0.55) {
         // Mall / big-box with rooftop HVAC
@@ -10920,7 +11019,13 @@ function generateChunkContent(biome, cx, cy) {
             let bw = cw - rngRange(rng, 90, 130);
             let bh = ch - rngRange(rng, 90, 130);
             if (bw < 40 || bh < 40) continue;
-            let b = { x: bx, y: by, w: bw, h: bh, details: [], style: rngInt(rng, 0, 4) };
+            // isBlockBuilding marks the solids that drawBuildings() paints with
+            // the generic extruded roof. The shadow pass reads the same flag,
+            // so the two always agree about which masses have walls — anything
+            // that paints its own art (a shanty, a saloon front, a water tower)
+            // keeps a footprint-sized shadow instead of a wall-sized one.
+            let b = { x: bx, y: by, w: bw, h: bh, details: [], style: rngInt(rng, 0, 4),
+                      isBlockBuilding: true };
             let nDet = rngInt(rng, 1, 4);
             for (let d = 0; d < nDet; d++) {
               let t = rngPick(rng, ["hvac", "vent", "access"]);
@@ -10934,8 +11039,17 @@ function generateChunkContent(biome, cx, cy) {
         let nDump = dense ? rngInt(rng, 3, 7) : rngInt(rng, 1, 4);
         for (let k = 0; k < nDump; k++) {
           let vert = rng() > 0.5;
-          solid.push({ x: ox + rngRange(rng, 180, 1020), y: oy + rngRange(rng, 180, 1020),
-                       w: 40, h: 25, isDumpster: true, angle: vert ? HALF_PI : 0 });
+          // Rotated by angle, so the footprint it actually occupies is swapped.
+          const dw = vert ? 25 : 40, dh = vert ? 40 : 25;
+          for (let att = 0; att < 14; att++) {
+            const dx2 = ox + rngRange(rng, 180, 1020);
+            const dy2 = oy + rngRange(rng, 180, 1020);
+            if (!clearOf(solid, dx2, dy2, dw, dh, 24)) continue;
+            solid.push({ x: dx2, y: dy2, w: 40, h: 25, isDumpster: true, angle: vert ? HALF_PI : 0 });
+            break;
+          }
+          // No spot in 14 draws means the block is full. Dropping the dumpster
+          // is correct: forcing it in is what put one inside a wall.
         }
       }
 
@@ -11122,7 +11236,8 @@ function generateChunkContent(biome, cx, cy) {
           const w = rngRange(rng, 160, 260), h = rngRange(rng, 160, 240);
           const spot = lat.take(w, h);
           if (!spot) break;
-          solid.push({ x: spot.x, y: spot.y, w, h, style: rngInt(rng, 0, 4), details: [] });
+          solid.push({ x: spot.x, y: spot.y, w, h, style: rngInt(rng, 0, 4), details: [],
+                       isBlockBuilding: true });
         }
       }
       break;
@@ -11192,10 +11307,24 @@ function generateChunkContent(biome, cx, cy) {
     (CLUTTER_ANIMATED[item.t] ? decor : decorBake).push(item);
   }
 
-  // A rare ruined vehicle per chunk — solid, so it doubles as cover
+  // A rare ruined vehicle per chunk — solid, so it doubles as cover.
+  // The lattice biomes get a free cell. The city layouts have no lattice, and
+  // this used to take a raw random point and push it unconditionally: the last
+  // solid added to the chunk, landing on top of whatever was already there.
+  // It is the single biggest source of buildings that appear welded together.
   if (rng() > 0.72) {
-    const spot = lat ? lat.take(110, 110)
-                     : { x: ox + rngRange(rng, 150, 1050), y: oy + rngRange(rng, 150, 1050) };
+    let spot = null;
+    if (lat) {
+      spot = lat.take(110, 110);
+    } else {
+      for (let att = 0; att < 16; att++) {
+        const wx2 = ox + rngRange(rng, 150, 1050);
+        const wy2 = oy + rngRange(rng, 150, 1050);
+        if (!solidsClearAt(solid, wx2, wy2, 96, 54, 30)) continue;
+        spot = { x: wx2, y: wy2 };
+        break;
+      }
+    }
     if (spot && !nearAnchor(spot.x, spot.y, 400)) {
       solid.push({ x: spot.x, y: spot.y, w: 96, h: 54, isBiomeProp: true, propType: "WRECK",
                    angle: rng() * TWO_PI, tint: rng() });
@@ -11340,31 +11469,48 @@ function bakeChunkTerrain(biome, cx, cy, staticDecor) {
   base.loadPixels();
   const px = base.pixels;
 
+  // The three-way material blend is a pure function of the large-scale noise
+  // value, so resolve it once into a 256-step ramp and index that per pixel.
+  // The terrain bake is the only operation in the streamer that can stall a
+  // frame, and this branchy interpolation was most of its inner cost — which
+  // is exactly why the old code could only afford one bake per frame.
+  const RAMP = 256;
+  const rampR = new Float32Array(RAMP + 1);
+  const rampG = new Float32Array(RAMP + 1);
+  const rampB = new Float32Array(RAMP + 1);
+  for (let i = 0; i <= RAMP; i++) {
+    const t = i / RAMP;
+    if (t < 0.45) {
+      const k = t / 0.45;
+      rampR[i] = p.dark[0] + (p.alt[0] - p.dark[0]) * k;
+      rampG[i] = p.dark[1] + (p.alt[1] - p.dark[1]) * k;
+      rampB[i] = p.dark[2] + (p.alt[2] - p.dark[2]) * k;
+    } else if (t < 0.72) {
+      const k = (t - 0.45) / 0.27;
+      rampR[i] = p.alt[0] + (p.base[0] - p.alt[0]) * k;
+      rampG[i] = p.alt[1] + (p.base[1] - p.alt[1]) * k;
+      rampB[i] = p.alt[2] + (p.base[2] - p.alt[2]) * k;
+    } else {
+      const k = (t - 0.72) / 0.28;
+      rampR[i] = p.base[0] + (p.accent[0] - p.base[0]) * k;
+      rampG[i] = p.base[1] + (p.accent[1] - p.base[1]) * k;
+      rampB[i] = p.base[2] + (p.accent[2] - p.base[2]) * k;
+    }
+  }
+
   for (let y = 0; y < CHUNK_BASE; y++) {
     for (let x = 0; x < CHUNK_BASE; x++) {
       const nA = sample(latA, x, y);
       const nB = sample(latB, x, y);
       const nC = sample(latC, x, y);
 
-      // Blend the three base materials by large-scale noise
-      let t = nA;
-      let r, gg, b;
-      if (t < 0.45) {
-        const k = t / 0.45;
-        r  = p.dark[0] + (p.alt[0] - p.dark[0]) * k;
-        gg = p.dark[1] + (p.alt[1] - p.dark[1]) * k;
-        b  = p.dark[2] + (p.alt[2] - p.dark[2]) * k;
-      } else if (t < 0.72) {
-        const k = (t - 0.45) / 0.27;
-        r  = p.alt[0] + (p.base[0] - p.alt[0]) * k;
-        gg = p.alt[1] + (p.base[1] - p.alt[1]) * k;
-        b  = p.alt[2] + (p.base[2] - p.alt[2]) * k;
-      } else {
-        const k = (t - 0.72) / 0.28;
-        r  = p.base[0] + (p.accent[0] - p.base[0]) * k;
-        gg = p.base[1] + (p.accent[1] - p.base[1]) * k;
-        b  = p.base[2] + (p.accent[2] - p.base[2]) * k;
-      }
+      // Material ramp lookup. The blend depends on nothing but nA, so it does
+      // not belong inside a 40 000-iteration loop — see rampR/G/B above.
+      let ri = (nA * RAMP) | 0;
+      if (ri < 0) ri = 0; else if (ri > RAMP) ri = RAMP;
+      let r  = rampR[ri];
+      let gg = rampG[ri];
+      let b  = rampB[ri];
 
       // Mid-frequency mottling — patches of wear, moisture, growth
       const mid = (nB - 0.5) * 34;
@@ -12013,7 +12159,10 @@ class ChunkManager {
     this.anchors  = authoredCore ? [] : buildAnchorStructures(biome);
     this.lastKey  = null;
     this.dirty    = true;
-    this.stats    = { loaded: 0, baked: 0, evicted: 0 };
+    // Retired terrain buffers, most-recently-used last. Walking back the way
+    // you came pulls from here instead of re-baking.
+    this.texCache = new Map();
+    this.stats    = { loaded: 0, baked: 0, evicted: 0, forced: 0 };
   }
 
   static keyOf(cx, cy) { return cx + "," + cy; }
@@ -12022,15 +12171,31 @@ class ChunkManager {
     return { cx: Math.floor(x / CHUNK_W), cy: Math.floor(y / CHUNK_W) };
   }
 
-  // -- Called every frame; cheap unless the player crossed a chunk border ----
+  // Chunk index range the camera can actually see this frame. Residency used
+  // to be driven purely off the player's own chunk, which is not the same
+  // question: at zoom 0.45 the view is over two chunks tall, and during a
+  // travel arrival or a killcam the camera is not on the player at all.
+  visibleRange(pad) {
+    const p = pad || 0;
+    return {
+      i0: Math.floor((viewLeft   - p) / CHUNK_W),
+      i1: Math.floor((viewRight  + p) / CHUNK_W),
+      j0: Math.floor((viewTop    - p) / CHUNK_W),
+      j1: Math.floor((viewBottom + p) / CHUNK_W)
+    };
+  }
+
+  // -- Called every frame ---------------------------------------------------
+  // Residency is now recomputed every frame rather than only when the player
+  // crosses a chunk border. It is a couple of dozen Map lookups; the expensive
+  // half (generateChunkContent, the terrain bake) still only runs for chunks
+  // that are genuinely new. Gating it on border crossings meant a fast mover,
+  // a teleport or a camera that left the player behind could all outrun the
+  // resident set and leave the view sitting over chunks that did not exist.
   update(px, py) {
     const { cx, cy } = this.worldToChunk(px, py);
-    const key = ChunkManager.keyOf(cx, cy);
-
-    if (key !== this.lastKey) {
-      this.lastKey = key;
-      this.refreshResidency(cx, cy);
-    }
+    this.lastKey = ChunkManager.keyOf(cx, cy);
+    this.refreshResidency(cx, cy);
     this.processBakeQueue();
     if (this.dirty) {
       this.rebuildWorldArrays();
@@ -12038,69 +12203,150 @@ class ChunkManager {
     }
   }
 
+  // Create a chunk record and publish its contents. Split out of
+  // refreshResidency so drawTerrain can adopt a chunk the camera reached first.
+  adopt(i, j) {
+    const k = ChunkManager.keyOf(i, j);
+    let ch = this.chunks.get(k);
+    if (ch) return ch;
+    const content = generateChunkContent(this.biome, i, j);
+    // Tag them as the streamer's own. buildings[] is one flat array of
+    // authored core + anchors + every resident chunk, so without this the
+    // late-adoption pass below cannot tell a hand-placed solid from a
+    // streamed one and promotes the whole chunk into the authored core.
+    for (let s = 0; s < content.solid.length; s++) content.solid[s].isChunkSolid = true;
+    for (let s = 0; s < content.cars.length;  s++) content.cars[s].isChunkSolid  = true;
+    ch = {
+      cx: i, cy: j,
+      solid: content.solid,
+      decor: content.decor,           // animated only — drawn live
+      decorBake: content.decorBake,   // static — stamped into the terrain buffer
+      cars:  content.cars,
+      tex:   null,
+      queued: false
+    };
+    this.chunks.set(k, ch);
+    this.stats.loaded++;
+    this.dirty = true;
+    return ch;
+  }
+
+  // Bake, or recover the buffer from the retire cache.
+  bakeChunk(ch) {
+    if (ch.tex) return ch.tex;
+    const k = ChunkManager.keyOf(ch.cx, ch.cy);
+    const cached = this.texCache.get(k);
+    if (cached) {
+      this.texCache.delete(k);
+      ch.tex = cached;
+      ch.queued = false;
+      return ch.tex;
+    }
+    ch.tex = bakeChunkTerrain(this.biome, ch.cx, ch.cy, ch.decorBake);
+    ch.queued = false;
+    this.stats.baked++;
+    return ch.tex;
+  }
+
+  // Evicting used to destroy the buffer outright, so backtracking across a
+  // border re-baked from scratch and showed flat fill until it landed. Patrol
+  // a boundary and the world strobed once per crossing. Retiring the buffer to
+  // a bounded cache makes the return trip free.
+  retire(ch) {
+    if (!ch.tex) return;
+    const k = ChunkManager.keyOf(ch.cx, ch.cy);
+    // delete-then-set: Map.set on a key that already exists keeps its original
+    // insertion position, which would leave a chunk you keep re-treading
+    // sitting at the front of the queue and getting thrown away first.
+    this.texCache.delete(k);
+    this.texCache.set(k, ch.tex);
+    ch.tex = null;
+    while (this.texCache.size > CHUNK_TEX_CACHE) {
+      const oldest = this.texCache.keys().next().value;
+      const g = this.texCache.get(oldest);
+      this.texCache.delete(oldest);
+      if (g) g.remove();
+    }
+  }
+
   refreshResidency(cx, cy) {
-    // Load the ring around the player
+    // Load the ring around the player, and — separately — everything the
+    // camera can see plus a chunk of margin, so terrain is always resident and
+    // baked before it can scroll into frame.
     for (let j = cy - CHUNK_LOAD_R; j <= cy + CHUNK_LOAD_R; j++) {
-      for (let i = cx - CHUNK_LOAD_R; i <= cx + CHUNK_LOAD_R; i++) {
-        const k = ChunkManager.keyOf(i, j);
-        if (this.chunks.has(k)) continue;
-        const content = generateChunkContent(this.biome, i, j);
-        // Tag them as the streamer's own. buildings[] is one flat array of
-        // authored core + anchors + every resident chunk, so without this the
-        // late-adoption pass below cannot tell a hand-placed solid from a
-        // streamed one and promotes the whole chunk into the authored core.
-        for (let s = 0; s < content.solid.length; s++) content.solid[s].isChunkSolid = true;
-        for (let s = 0; s < content.cars.length;  s++) content.cars[s].isChunkSolid  = true;
-        this.chunks.set(k, {
-          cx: i, cy: j,
-          solid: content.solid,
-          decor: content.decor,           // animated only — drawn live
-          decorBake: content.decorBake,   // static — stamped into the terrain buffer
-          cars:  content.cars,
-          tex:   null,
-          queued: false
-        });
-        this.stats.loaded++;
-        this.dirty = true;
-      }
+      for (let i = cx - CHUNK_LOAD_R; i <= cx + CHUNK_LOAD_R; i++) this.adopt(i, j);
+    }
+    const vis = this.visibleRange(CHUNK_W);
+    for (let j = vis.j0; j <= vis.j1; j++) {
+      for (let i = vis.i0; i <= vis.i1; i++) this.adopt(i, j);
     }
 
-    // Queue terrain bakes nearest-first so what you can see resolves first
+    // Rebuild the bake queue every frame, ordered by what the camera is about
+    // to need: on screen first, then outward from the player. Priority is a
+    // function of where the camera is now, so it has to be recomputed as the
+    // camera moves rather than fixed at residency time.
+    const onScreen = this.visibleRange(0);
     const pending = [];
     for (const [k, ch] of this.chunks) {
-      if (ch.tex || ch.queued) continue;
+      if (ch.tex) continue;
+      const seen = ch.cx >= onScreen.i0 && ch.cx <= onScreen.i1 &&
+                   ch.cy >= onScreen.j0 && ch.cy <= onScreen.j1;
       const d = Math.max(Math.abs(ch.cx - cx), Math.abs(ch.cy - cy));
-      if (d <= CHUNK_LOAD_R) pending.push({ k, d });
+      pending.push({ k, d: seen ? -1 : d });
     }
     pending.sort((a, b) => a.d - b.d);
+    this.bakeQ.length = 0;
     for (const q of pending) {
       this.chunks.get(q.k).queued = true;
       this.bakeQ.push(q.k);
     }
 
-    // Evict everything past the keep radius
+    // Evict everything past the keep radius — unless the camera is looking at
+    // it. Without that second test a camera pulled away from the player (the
+    // killcam, an overworld pull-back) could evict the very chunks on screen.
+    const keep = this.visibleRange(CHUNK_W);
     for (const [k, ch] of this.chunks) {
       const d = Math.max(Math.abs(ch.cx - cx), Math.abs(ch.cy - cy));
-      if (d > CHUNK_KEEP_R) {
-        if (ch.tex) { ch.tex.remove(); ch.tex = null; }   // frees the canvas
-        this.chunks.delete(k);
-        this.stats.evicted++;
-        this.dirty = true;
-      }
+      if (d <= CHUNK_KEEP_R) continue;
+      if (ch.cx >= keep.i0 && ch.cx <= keep.i1 && ch.cy >= keep.j0 && ch.cy <= keep.j1) continue;
+      this.retire(ch);
+      this.chunks.delete(k);
+      this.stats.evicted++;
+      this.dirty = true;
     }
   }
 
-  // -- Amortised baking: at most CHUNK_BAKE_CAP buffers per frame -----------
+  // -- Amortised baking: bounded by count AND by wall-clock ------------------
   processBakeQueue() {
-    let budget = CHUNK_BAKE_CAP;
-    while (budget > 0 && this.bakeQ.length) {
+    const clock = (typeof performance !== 'undefined' && performance.now)
+                ? () => performance.now() : () => Date.now();
+    const t0 = clock();
+    let n = 0;
+    while (this.bakeQ.length && n < CHUNK_BAKE_CAP) {
       const k = this.bakeQ.shift();
       const ch = this.chunks.get(k);
       if (!ch || ch.tex) continue;
-      ch.tex = bakeChunkTerrain(this.biome, ch.cx, ch.cy, ch.decorBake);
-      ch.queued = false;
-      this.stats.baked++;
-      budget--;
+      this.bakeChunk(ch);
+      n++;
+      if (clock() - t0 >= CHUNK_BAKE_MS) break;
+    }
+  }
+
+  // Anything on screen is baked before it is drawn, synchronously if the
+  // amortised queue has not reached it yet. This is the guarantee that removes
+  // the flashing: there is no longer any frame in which a visible chunk lacks
+  // its texture, so there is nothing for the old flat-fill fallback to do.
+  //
+  // The cost lands only where it is unavoidable — a teleport or a travel
+  // arrival, both of which happen behind a fade — and one honest hitch there is
+  // worth far more than seconds of strobing terrain.
+  ensureVisibleBaked() {
+    const vis = this.visibleRange(80);
+    for (let j = vis.j0; j <= vis.j1; j++) {
+      for (let i = vis.i0; i <= vis.i1; i++) {
+        const ch = this.adopt(i, j);
+        if (!ch.tex) { this.bakeChunk(ch); this.stats.forced++; }
+      }
     }
   }
 
@@ -12156,6 +12402,9 @@ class ChunkManager {
 
   // -- Ground blit ----------------------------------------------------------
   drawTerrain() {
+    // Nothing visible reaches the blit without a texture.
+    this.ensureVisibleBaked();
+
     // Nearest-neighbour, deliberately. Bilinear magnification of the terrain
     // buffer softened every road edge, crosswalk and lane marking into mush --
     // the whole world read as an out-of-focus lens. Crispness comes from
@@ -12170,16 +12419,11 @@ class ChunkManager {
     }
     smooth();
 
-    // Un-baked chunks still need *something* under them
-    const p = BIOMES[this.biome].pal;
-    noStroke(); fill(p.alt[0], p.alt[1], p.alt[2]);
-    for (const ch of this.chunks.values()) {
-      if (ch.tex) continue;
-      const wx = ch.cx * CHUNK_W, wy = ch.cy * CHUNK_W;
-      if (wx > viewRight || wx + CHUNK_W < viewLeft)  continue;
-      if (wy > viewBottom || wy + CHUNK_W < viewTop)  continue;
-      rect(wx, wy, CHUNK_W, CHUNK_W);
-    }
+    // The flat-fill fallback that used to live here is gone. It painted a
+    // hard-edged rectangle of the biome's alt colour over any visible chunk
+    // whose bake had not landed, then that rectangle snapped to full detail a
+    // frame or twenty later. Those slabs appearing, sliding and popping ARE
+    // the flashing. ensureVisibleBaked() above makes the case unreachable.
   }
 
   // -- Decor pass (shadows first, then props) -------------------------------
@@ -12196,8 +12440,24 @@ class ChunkManager {
     }
   }
 
+  // One-off, run behind the level-entry fade: bake the whole resident ring with
+  // no per-frame budget, so the first frame you actually see is already
+  // complete rather than resolving itself in front of you.
+  warmUp(limit) {
+    const cap = limit || 40;
+    let n = 0;
+    while (this.bakeQ.length && n < cap) {
+      const ch = this.chunks.get(this.bakeQ.shift());
+      if (!ch || ch.tex) continue;
+      this.bakeChunk(ch);
+      n++;
+    }
+  }
+
   dispose() {
     for (const ch of this.chunks.values()) if (ch.tex) ch.tex.remove();
+    for (const g of this.texCache.values()) if (g) g.remove();
+    this.texCache.clear();
     this.chunks.clear();
     this.bakeQ.length = 0;
   }
@@ -12213,6 +12473,32 @@ let chunkMgr = null;
 // ###########################################################################
 const LIGHT_DX = 0.58;
 const LIGHT_DY = 0.81;
+
+// How far a building's walls extrude past its footprint, and how far the mass
+// may then throw. Both are capped well inside BUILDING_GAP_MIN -- the tightest
+// alley the block subdivider will ever leave -- so a building's own geometry
+// and its own shadow can never reach its neighbour. That reach is what made
+// two separate buildings read as one overlapping blob.
+const BUILDING_RISE_MAX   = 26;
+const BUILDING_SHADOW_MAX = 24;
+const BUILDING_GAP_MIN    = 90;
+
+// Deterministic per-building mass, hashed off the footprint's world position so
+// it is identical every time the chunk loads and across sessions. One function,
+// read by both the shadow pass and the body pass: if those two disagreed about
+// how tall a building is, its shadow would detach from its walls, which is
+// exactly the "second building" artefact this replaces.
+function buildingRise(b) {
+  if (b._rise !== undefined) return b._rise;
+  const foot = Math.min(b.w || 0, b.h || 0);
+  let h = Math.imul((b.x | 0) ^ 0x9e3779b9, 0x85ebca6b) ^
+          Math.imul((b.y | 0) ^ 0x27d4eb2f, 0xc2b2ae35);
+  h = Math.imul(h ^ (h >>> 15), 0x2545f491);
+  const r01 = ((h ^ (h >>> 13)) >>> 0) / 4294967296;
+  // Bigger footprints carry more storeys, but the cap always wins.
+  b._rise = Math.min(BUILDING_RISE_MAX, 5 + foot * 0.075 + r01 * foot * 0.09);
+  return b._rise;
+}
 
 function castShadow(x, y, w, h, len, alpha) {
   fill(0, 0, 0, alpha === undefined ? 80 : alpha);
@@ -12281,12 +12567,44 @@ function drawBiomeShadows() {
       fill(0, 0, 0, 76);
       ellipse(b.x + LIGHT_DX * 26, b.y + LIGHT_DY * 26 + 20, 70, 34);
     } else {
-      // Buildings: a soft contact shadow plus the cast slab, so edges don't
-      // read as a second detached object floating beside the structure.
-      fill(0, 0, 0, 38);
-      rect(b.x - w / 2 - 4, b.y - h / 2 - 4, w + 8, h + 8, 4);
-      fill(0, 0, 0, 82);
-      rect(b.x - w / 2 + LIGHT_DX * len, b.y - h / 2 + LIGHT_DY * len, w, h, 2);
+      // Buildings. The old pass drew a full-size copy of the footprint offset
+      // down-right: a rectangle the same size as the building, detached from
+      // it, with a hard edge -- which is why it read as a second building
+      // overlapping the first rather than as a shadow.
+      //
+      // A cast shadow is the convex hull of the silhouette and its offset copy,
+      // so it stays welded to the base it belongs to. The silhouette here is
+      // the footprint plus the wall extrusion drawBuildings() paints, so the
+      // shadow begins exactly where the geometry stops.
+      // Only the masses drawBuildings() actually extrudes get a wall-sized
+      // silhouette. Everything else here paints its own art at footprint size,
+      // and giving it the taller silhouette would detach the shadow again.
+      const rise = b.isBlockBuilding ? buildingRise(b) : 0;
+      const wx = LIGHT_DX * rise, wy = LIGHT_DY * rise;
+      const x0 = b.x - w / 2,      y0 = b.y - h / 2;
+      const x1 = b.x + w / 2 + wx, y1 = b.y + h / 2 + wy;
+      const sl = Math.min(BUILDING_SHADOW_MAX, Math.max(rise, Math.min(w, h) * 0.10) * 0.95);
+      const dx = LIGHT_DX * sl,    dy = LIGHT_DY * sl;
+
+      // Contact occlusion: nested rings of low alpha. Canvas has no cheap blur
+      // in a per-frame path, and a stack of rings is what a soft contact shadow
+      // looks like from directly above -- it grounds the mass without drawing
+      // a second hard edge anywhere near it.
+      for (let k = 3; k >= 1; k--) {
+        const pad = k * 3;
+        fill(0, 0, 0, 12);
+        rect(x0 - pad, y0 - pad, (x1 - x0) + pad * 2, (y1 - y0) + pad * 2, 5);
+      }
+
+      fill(0, 0, 0, 64);
+      beginShape();
+      vertex(x0, y0);
+      vertex(x1, y0);
+      vertex(x1 + dx, y0 + dy);
+      vertex(x1 + dx, y1 + dy);
+      vertex(x0 + dx, y1 + dy);
+      vertex(x0, y1);
+      endShape(CLOSE);
     }
   }
 }
@@ -13131,11 +13449,25 @@ function drawNightLights() {
   ctx.globalCompositeOperation = 'lighter';
   noStroke();
 
-  let n = 0;
+  // Which lamps get lit used to be "the first 40 street lights in
+  // activeBuildings" — and that array is rebuilt from scratch every time chunk
+  // residency changes, so crossing a border reshuffled it and lamps blinked on
+  // and off at random. The budget is still 40, but spent on the nearest ones:
+  // a choice that depends on geometry instead of array order, and therefore
+  // stays put from frame to frame.
+  const px0 = player ? player.x : (viewLeft + viewRight) / 2;
+  const py0 = player ? player.y : (viewTop + viewBottom) / 2;
+  const lamps = [];
   for (const b of activeBuildings) {
     if (!b.isStreetLight) continue;
     if (!inView(b.x, b.y, 280)) continue;
-    if (++n > 40) break;                      // a dense junction cannot run away with the frame
+    const dx = b.x - px0, dy = b.y - py0;
+    lamps.push({ b: b, d2: dx * dx + dy * dy });
+  }
+  lamps.sort((l1, l2) => l1.d2 - l2.d2);
+  const lit = lamps.length < 40 ? lamps.length : 40;
+  for (let i = 0; i < lit; i++) {
+    const b = lamps[i].b;
     fill(255, 196, 108, 22 * amt); ellipse(b.x, b.y, 420, 420);
     fill(255, 210, 140, 30 * amt); ellipse(b.x, b.y, 230, 230);
     fill(255, 236, 196, 44 * amt); ellipse(b.x, b.y,  90,  90);
@@ -13510,10 +13842,19 @@ function generateMap() {
     sx0 = ap.x; sy0 = ap.y;
   }
   chunkMgr.lastKey = null;
-  chunkMgr.update(sx0, sy0);
-  // Bake the immediate ring up front — a one-off cost during the fade
-  const savedCap = chunkMgr.bakeQ.length;
-  for (let i = 0; i < Math.min(savedCap, 9); i++) chunkMgr.processBakeQueue();
+  // viewLeft..viewBottom still describe wherever the camera was before this
+  // level loaded, and residency reads them. Point them at the spawn now — the
+  // camera snaps here on the next frame anyway — so the ring that gets baked
+  // is the one you are about to be looking at.
+  const halfW = (width  / zoom) / 2, halfH = (height / zoom) / 2;
+  viewLeft = sx0 - halfW; viewRight  = sx0 + halfW;
+  viewTop  = sy0 - halfH; viewBottom = sy0 + halfH;
+  chunkMgr.refreshResidency(Math.floor(sx0 / CHUNK_W), Math.floor(sy0 / CHUNK_W));
+  // Bake the whole ring up front — a one-off cost, and it lands during the
+  // fade. Arriving on a fully-resolved world is the entire point.
+  chunkMgr.warmUp((CHUNK_LOAD_R * 2 + 1) * (CHUNK_LOAD_R * 2 + 1));
+  chunkMgr.rebuildWorldArrays();
+  chunkMgr.dirty = false;
 
   getBiomeState(currentBiome).visited = true;
 }
