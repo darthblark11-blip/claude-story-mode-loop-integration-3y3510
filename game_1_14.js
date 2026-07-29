@@ -2501,8 +2501,11 @@ viewBottom = camY + height / zoom + shakePad;
   if (BIOME_ACTIVE) { drawNightLights(); if (weather) weather.drawWorld(); }
   pop();
 
-  // Atmospheric grading + vignette in screen space
-  if (BIOME_ACTIVE) drawBiomeScreenLayer();
+  // Lighting first: the rig multiplies the finished world, so a lamp's pool
+  // survives instead of being painted over by the darkness. Haze goes on top
+  // of the lit result, because scatter is something light does on its way to
+  // the camera.
+  if (BIOME_ACTIVE) { drawLightPass(); drawBiomeScreenLayer(); }
  
 
   // SCREEN UI
@@ -14138,37 +14141,220 @@ function buildGradeLayer(night, g, fogRGBA, w, h) {
   b.clear();
   b.noStroke();
 
-  // Golden hour, then haze and night resolved into a single fill.
+  // Haze and the golden band only.
+  //
+  // Night used to be done here, as a flat 59%-opaque navy fill over the whole
+  // frame -- and this pass runs AFTER the lamps have been drawn, so every pool
+  // of light was painted over by the same sheet that made it night. That is
+  // why the lamps never read as light sources: they were being covered up by
+  // the darkness a fraction of a second after being added to it. Darkness is
+  // the light rig's job now (see drawLightPass); haze is additive scatter and
+  // genuinely does sit on top of everything.
   if (g > 0.01) { b.fill(255, 146, 58, 52 * g); b.rect(0, 0, GRADE_W, gh); }
 
-  const af = fogRGBA ? (fogRGBA[3] / 255) * (0.34 + 0.66 * night) : 0;
-  const an = (150 / 255) * night * night;
-  const ao = 1 - (1 - af) * (1 - an);
-  if (ao > 0.004) {
-    const mix = (cf, cn) => ((cn * an) + (cf * af * (1 - an))) / ao;
-    b.fill(mix(fogRGBA ? fogRGBA[0] : 0, 12),
-           mix(fogRGBA ? fogRGBA[1] : 0, 20),
-           mix(fogRGBA ? fogRGBA[2] : 0, 52), ao * 255);
+  // Haze only when the light rig did not already carry it (i.e. in daylight,
+  // where there is no darkness sheet for it to ride along in).
+  const af = (_rigTookHaze || !fogRGBA) ? 0 : (fogRGBA[3] / 255) * (0.34 + 0.66 * night);
+  _gradeLoad = af + (g > 0.01 ? g * 0.2 : 0);
+  if (af > 0.004) {
+    b.fill(fogRGBA[0], fogRGBA[1], fogRGBA[2], af * 255);
     b.rect(0, 0, GRADE_W, gh);
   }
-
-  // Vignette. Starts well outside the middle of the frame and stays weak, so
-  // it closes the edge without putting the player in a bright disc -- that
-  // follow-spot was the "spotlight" this replaced.
-  const vig = 0.24 * night;
-  _gradeLoad = ao + vig + (g > 0.01 ? g * 0.2 : 0);
-  const ctx = b.drawingContext;
-  const grd = ctx.createRadialGradient(
-    GRADE_W / 2, gh / 2, Math.min(GRADE_W, gh) * 0.62,
-    GRADE_W / 2, gh / 2, Math.max(GRADE_W, gh) * 0.92);
-  grd.addColorStop(0.00, 'rgba(6,9,20,0)');
-  grd.addColorStop(0.55, 'rgba(6,9,20,' + (vig * 0.34).toFixed(3) + ')');
-  grd.addColorStop(1.00, 'rgba(6,9,20,' + vig.toFixed(3) + ')');
-  ctx.save();
-  ctx.fillStyle = grd;
-  ctx.fillRect(0, 0, GRADE_W, gh);
-  ctx.restore();
   return b;
+}
+
+// ###########################################################################
+//  LIGHT RIG
+//  A screen-space light map, multiplied over the finished frame.
+//
+//  Darkness was previously a flat wash laid over everything, which is why
+//  night looked like a blue filter rather than a place: it moved every pixel
+//  toward the same navy, so a lit road, a dark alley and a white wall all
+//  ended up the same colour, and lamp glows drawn earlier in the frame were
+//  simply painted over.
+//
+//  Multiplying instead of washing fixes both at once. The map holds how much
+//  light reaches each part of the screen -- ambient moonlight everywhere, plus
+//  a pool around every source -- and the frame is multiplied by it. Ground
+//  under a lamp keeps its own daylight colour because it is multiplied by 1;
+//  ground away from one is scaled down but keeps its contrast, so the world
+//  still reads as a world. Nothing is ever flattened toward a single hue.
+//
+//  It is cheap because light is low frequency. The map is 192 px wide however
+//  big the canvas is, and stretched on the way out -- one small buffer, a
+//  handful of gradient fills, one full-screen blit, and none of it runs at all
+//  in broad daylight.
+// ###########################################################################
+const LIGHT_W = 192;
+const LIGHT_BUDGET = 26;           // sources per frame, nearest first
+let _lightBuf = null, _lightGrads = null, _lightCtx = null;
+let _rigTookHaze = false;   // set per frame: did the rig already composite the haze?
+
+// One cached radial per colour, in unit space, scaled by the transform.
+function lightGradient(ctx, r, g, b) {
+  if (ctx !== _lightCtx) { _lightGrads = new Map(); _lightCtx = ctx; }
+  const key = (r << 16) | (g << 8) | b;
+  let grad = _lightGrads.get(key);
+  if (!grad) {
+    grad = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+    const c = r + ',' + g + ',' + b;
+    // Inverse-square-ish: bright core, long thin tail. A linear ramp reads as
+    // a flat disc with an edge, which is what a light must never look like.
+    grad.addColorStop(0.00, 'rgba(' + c + ',1)');
+    grad.addColorStop(0.22, 'rgba(' + c + ',0.62)');
+    grad.addColorStop(0.50, 'rgba(' + c + ',0.26)');
+    grad.addColorStop(0.78, 'rgba(' + c + ',0.07)');
+    grad.addColorStop(1.00, 'rgba(' + c + ',0)');
+    _lightGrads.set(key, grad);
+  }
+  return grad;
+}
+
+// Punch a light out of the darkness.
+//
+// The map holds DARKNESS, not light: it starts as an even sheet whose alpha is
+// how much of the world the night is hiding, and each source erases some of it
+// with 'destination-out'. Composited back over the frame with ordinary
+// source-over, alpha a leaves dst*(1-a) -- a true per-pixel multiply, so the
+// world keeps its own hues and its own contrast and simply gets darker.
+//
+// The obvious alternative is to accumulate light additively and composite with
+// 'multiply'. It was built that way first and measured: 'multiply' has to read
+// the destination for every pixel of a 1080x2340 canvas and cost 10 ms a frame,
+// a 37% loss at night. This gets the same result through the cheapest blend
+// the compositor has.
+function addLight(buf, bx, by, br, power) {
+  if (!(power > 0.004) || !(br > 0.4)) return;
+  const ctx = buf.drawingContext;
+  ctx.save();
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.globalAlpha = power > 1 ? 1 : power;
+  ctx.translate(bx, by);
+  ctx.scale(br, br * 0.82);          // slightly flattened: a top-down pool
+  ctx.fillStyle = lightGradient(ctx, 0, 0, 0);
+  ctx.beginPath();
+  ctx.arc(0, 0, 1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawLightPass() {
+  const d = daylight();
+  // How much of its own colour the world keeps where nothing is lighting it.
+  // Deliberately not near zero: a playable night is a dim one, not a black
+  // one, and crushing it was the complaint this replaces.
+  const amb = 0.50 + 0.50 * d;
+  _rigTookHaze = false;
+  if (amb >= 0.995) return;                     // broad daylight: no rig at all
+
+  const lw = LIGHT_W;
+  const lh = Math.max(16, Math.round(lw * height / width));
+  if (!_lightBuf || _lightBuf.width !== lw || _lightBuf.height !== lh) {
+    if (_lightBuf) _lightBuf.remove();
+    _lightBuf = createGraphics(lw, lh);
+    _lightBuf.pixelDensity(1);
+    _lightGrads = null; _lightCtx = null;
+  }
+  const buf = _lightBuf;
+  const night = 1 - d;
+
+  // An even sheet of night, with the biome's haze folded into it.
+  //
+  // Very dark blue rather than black, so the deepest shadows keep a trace of
+  // moonlight instead of going to dead grey -- at these alphas it is a tint,
+  // not a wash, and the world underneath keeps its own colour.
+  //
+  // Haze is composited in here analytically rather than run as its own
+  // full-screen pass afterwards. Night over haze is
+  //     dst*(1-aN)*(1-aF) + N*aN*(1-aF) + F*aF
+  // which is exactly one source-over of alpha 1-(1-aN)(1-aF) in the colour
+  // that leaves. One blit at night instead of two, and the result is identical
+  // rather than approximate.
+  const def0 = BIOMES[currentBiome];
+  const fog = def0 ? def0.fog : null;
+  const aN = 1 - amb;
+  const aF = fog ? (fog[3] / 255) * (0.34 + 0.66 * night) : 0;
+  const aT = 1 - (1 - aN) * (1 - aF);
+  _rigTookHaze = aF > 0.004;
+  buf.clear();
+  buf.noStroke();
+  if (aT > 0.002) {
+    const mix = (nc, fc) => (nc * aN * (1 - aF) + fc * aF) / aT;
+    buf.fill(mix(9, fog ? fog[0] : 0), mix(13, fog ? fog[1] : 0),
+             mix(28, fog ? fog[2] : 0), aT * 255);
+    buf.rect(0, 0, lw, lh);
+  }
+
+  // World -> light-buffer transform. Screen shake is deliberately ignored:
+  // light that jitters with an explosion looks like a fault, not a shake.
+  const k = lw / width;
+  const sx = (wx) => (wx - camX) * zoom * k;
+  const sy = (wy) => (wy - camY) * zoom * k;
+  const sr = zoom * k;
+  const pad = 220;
+
+  // Gather, nearest first, and spend a fixed budget. Which lights are lit has
+  // to depend on geometry rather than array order, or crossing a chunk border
+  // reshuffles the list and lamps swap on and off.
+  const px0 = player ? player.x : (viewLeft + viewRight) / 2;
+  const py0 = player ? player.y : (viewTop + viewBottom) / 2;
+  const src = [];
+  for (const b of activeBuildings) {
+    if (!b.isStreetLight) continue;
+    if (!inView(b.x, b.y, pad)) continue;
+    const dx = b.x - px0, dy = b.y - py0;
+    // Power is set so the core of a pool lands just short of saturation over
+    // the ambient floor rather than several times past it. Anything more and
+    // overlapping pools along a street clip to flat white, which is a blown
+    // highlight, not a lit road. Radius likewise: 330 units covers the
+    // carriageway and the near pavement, which is what a street light does.
+    src.push({ x: b.x, y: b.y + 14, r: 330,
+               p: 0.92 * (0.965 + 0.035 * Math.sin(frameCount * 0.031 + b.x * 0.013)),
+               d2: dx * dx + dy * dy });
+  }
+  if (typeof fires !== 'undefined' && fires) {
+    for (const f of fires) {
+      if (!inView(f.x, f.y, pad)) continue;
+      const flick = 0.78 + 0.22 * Math.sin(frameCount * 0.21 + f.x * 0.05)
+                         * Math.sin(frameCount * 0.13 + f.y * 0.03);
+      const dx = f.x - px0, dy = f.y - py0;
+      src.push({ x: f.x, y: f.y, r: 150 + f.r * 1.9,
+                 p: 0.98 * flick * Math.min(1, f.life / 60), d2: dx * dx + dy * dy });
+    }
+  }
+  src.sort((a, b) => a.d2 - b.d2);
+
+  const n = src.length < LIGHT_BUDGET ? src.length : LIGHT_BUDGET;
+  for (let i = 0; i < n; i++) {
+    const L = src[i];
+    addLight(buf, sx(L.x), sy(L.y), L.r * sr, L.p);
+  }
+
+  // The player carries a little light of their own, so a dark street stays
+  // playable without the rig having to lift the whole frame.
+  if (player && player.hp > 0) {
+    addLight(buf, sx(player.x), sy(player.y + 6), 240 * sr, 0.52);
+  }
+
+  // Vignette lives here rather than in the grade layer: closing the frame down
+  // is a reduction in light, so multiplying is what it actually is.
+  if (night > 0.02) {
+    const vig = 0.26 * night;
+    const ctx = buf.drawingContext;
+    const grd = ctx.createRadialGradient(
+      lw / 2, lh / 2, Math.min(lw, lh) * 0.62,
+      lw / 2, lh / 2, Math.max(lw, lh) * 0.95);
+    grd.addColorStop(0.00, 'rgba(9,13,28,0)');
+    grd.addColorStop(0.55, 'rgba(9,13,28,' + (vig * 0.34).toFixed(3) + ')');
+    grd.addColorStop(1.00, 'rgba(9,13,28,' + vig.toFixed(3) + ')');
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, lw, lh);
+    ctx.restore();
+  }
+
+  image(buf, 0, 0, width, height);
 }
 
 function drawBiomeScreenLayer() {
@@ -14181,7 +14367,7 @@ function drawBiomeScreenLayer() {
 
   // Quantised so slow light changes do not rebuild the layer every frame.
   const key = (night * 48 | 0) + '|' + (g * 24 | 0) + '|' + currentBiome + '|' +
-              (width | 0) + 'x' + (height | 0);
+              (_rigTookHaze ? 'H' : '-') + '|' + (width | 0) + 'x' + (height | 0);
   if (key !== _gradeKey || !_gradeBuf) {
     buildGradeLayer(night, g, def.fog, width, height);
     _gradeKey = key;
@@ -14230,6 +14416,16 @@ function drawClimateReadout() {
 // blit 45.8. Scaling a 128px buffer up 3x with smoothing costs the software
 // canvas far more than three flat radial fills do.
 function drawNightLights() {
+  // Only the fixtures themselves now: the bulb, its housing glow and the wet
+  // sheen it throws straight down. The pool of light each one casts across the
+  // ground is the light rig's job (see drawLightPass), because a pool has to
+  // be applied to the frame multiplicatively to read as illumination rather
+  // than as a bright decal sitting on top of the road.
+  //
+  // These are drawn inside the camera transform and stay small, so they cost a
+  // couple of fills per visible lamp and land in exactly the part of the light
+  // map that is already at full brightness -- the fixture is never dimmed by
+  // the very light it is casting.
   if (!BIOME_ACTIVE) return;
   const d = daylight();
   if (d > 0.62) return;
@@ -14240,45 +14436,32 @@ function drawNightLights() {
   ctx.globalCompositeOperation = 'lighter';
   noStroke();
 
-  // Which lamps get lit used to be "the first 40 street lights in
-  // activeBuildings" — and that array is rebuilt from scratch every time chunk
-  // residency changes, so crossing a border reshuffled it and lamps blinked on
-  // and off at random. The budget is still 40, but spent on the nearest ones:
-  // a choice that depends on geometry instead of array order, and therefore
-  // stays put from frame to frame.
   const px0 = player ? player.x : (viewLeft + viewRight) / 2;
   const py0 = player ? player.y : (viewTop + viewBottom) / 2;
   const lamps = [];
   for (const b of activeBuildings) {
     if (!b.isStreetLight) continue;
-    if (!inView(b.x, b.y, 280)) continue;
+    if (!inView(b.x, b.y, 120)) continue;
     const dx = b.x - px0, dy = b.y - py0;
     lamps.push({ b: b, d2: dx * dx + dy * dy });
   }
   lamps.sort((l1, l2) => l1.d2 - l2.d2);
-  const lit = lamps.length < 40 ? lamps.length : 40;
+  const lit = lamps.length < 30 ? lamps.length : 30;
   for (let i = 0; i < lit; i++) {
     const b = lamps[i].b;
-    // Graded, not three flat discs. Stacked flat ellipses show their own edges
-    // as two hard contour rings inside every pool -- the light looked like a
-    // target painted on the road. A falloff blob is one fill and reads as
-    // light. Flicker in the lamp itself is a slow, shallow mains hum rather
-    // than a per-frame random, which is what made them buzz.
+    // Slow shallow mains hum rather than a per-frame random, which buzzed.
     const hum = 0.965 + 0.035 * Math.sin(frameCount * 0.031 + b.x * 0.013);
-    softBlob(b.x, b.y + 12, 430, 300, 255, 196, 108, 30 * amt * hum);
-    softBlob(b.x, b.y + 6,  210, 158, 255, 214, 146, 42 * amt * hum);
-    fill(255, 240, 206, 52 * amt * hum); ellipse(b.x, b.y, 58, 58);
-  }
-
-  // A soft pool on the player, so a night street is readable without the
-  // vignette having to fake it. Deliberately small, warm and weak: the old
-  // effect people were seeing was a hard bright disc the size of the screen
-  // welded to the camera centre. This one is a lantern's worth of light that
-  // only exists once it is actually dark, and it fades out with the sun rather
-  // than snapping on.
-  if (player && player.hp > 0 && amt > 0.02) {
-    softBlob(player.x, player.y + 8, 300, 230, 255, 214, 158, 26 * amt);
-    softBlob(player.x, player.y + 4, 150, 118, 255, 232, 196, 30 * amt);
+    // The colour of the light. The rig decides how much of the world a lamp
+    // reveals; this decides what temperature it is. Doing the tint here, in
+    // world space over a few hundred units, costs a couple of fills per lamp
+    // -- carrying it through the rig instead would mean compositing the whole
+    // canvas with a blend that has to read every pixel back.
+    // One modest tint blob. A 460-unit gradient here measured 4.37 ms a frame
+    // for three visible lamps -- gradient fill is priced by area, and the rig
+    // is already doing the wide falloff. This only has to say "warm".
+    softBlob(b.x, b.y + 7, 200, 146, 255, 202, 128, 34 * amt * hum);
+    fill(255, 236, 198, 74 * amt * hum); ellipse(b.x, b.y, 30, 30);
+    fill(255, 252, 236, 96 * amt * hum); ellipse(b.x, b.y, 13, 13);
   }
 
   ctx.globalCompositeOperation = prevOp;
