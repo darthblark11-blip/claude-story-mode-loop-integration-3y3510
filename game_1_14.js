@@ -125,7 +125,15 @@ const WEAPONS = {
   ASSAULT_RIFLE: { name: "ASSAULT RIFLE", fireCooldown: 7, enemyCooldown: 48, maxAmmo: 30, bodyDmg: 30, headDmg: 60, spread: 0, pellets: 1 },
   SHOTGUN: { name: "SHOTGUN", fireCooldown: 20, enemyCooldown: 60, maxAmmo: 8, bodyDmg: 25, headDmg: 50, spread: 0.1275, pellets: 4 },
   ROCKET_LAUNCHER: { name: "ROCKET LAUNCHER", fireCooldown: 45, enemyCooldown: 60, maxAmmo: 4, bodyDmg: 350, headDmg: 350, spread: 0, pellets: 1 },
-  TASER: { name: "TASER", fireCooldown: 90, enemyCooldown: 60, maxAmmo: 4, bodyDmg: 0, headDmg: 0, spread: 0, pellets: 1 } 
+  TASER: { name: "TASER", fireCooldown: 90, enemyCooldown: 60, maxAmmo: 4, bodyDmg: 0, headDmg: 0, spread: 0, pellets: 1 },
+  // Silver magnum. Six shots, one every 0.88 s -- 53 frames at the 60 fps the
+  // rest of the cooldowns in this table are written against. Hits far harder
+  // than anything else per shot and reloads far more often, which is the whole
+  // character of it: the Dry Gulch cowboys will drop the player in two body
+  // shots, and a single head shot ends anyone in the game.
+  REVOLVER: { name: "REVOLVER", fireCooldown: 53, enemyCooldown: 53, maxAmmo: 6, bodyDmg: 75, headDmg: 250, spread: 0, pellets: 1 },
+  // Coach gun -- the lawman's short double-barrel. Two shells, wide pattern.
+  COACH_GUN: { name: "COACH GUN", fireCooldown: 34, enemyCooldown: 62, maxAmmo: 2, bodyDmg: 30, headDmg: 65, spread: 0.16, pellets: 5 } 
 };
 
 
@@ -497,6 +505,44 @@ if (isStoryMode) {
                 let cow = new Character(cowX, cowY, false, "COW");
                 enemiesList.push(cow);
             }
+
+            // --- DRY GULCH POPULATION ------------------------------------
+            // Placed by trade rather than sprinkled: drovers around the
+            // corrals and the saloon end, the law on its own doorstep, and
+            // townsfolk on the two shopping streets. Everyone starts neutral;
+            // shoot one and the wake-up cascade in takeDamage() turns the lot.
+            const townFolk = (type, x, y) => {
+                const c = new Character(x, y, false, type);
+                c.state = "PATROL";
+                enemiesList.push(c);
+                return c;
+            };
+            // Cowboys and cowgirls: stock pens, livery, and the saloon kerb
+            for (let i = 0; i < 7; i++)
+                townFolk(random() > 0.4 ? "COWBOY" : "COWGIRL",
+                         2200 + random(-260, 260), -160 + random(-190, 190));
+            for (let i = 0; i < 5; i++)
+                townFolk(random() > 0.4 ? "COWBOY" : "COWGIRL",
+                         2200 + random(-230, 230), -1500 + random(-170, 170));
+            for (let i = 0; i < 4; i++)
+                townFolk(random() > 0.5 ? "COWBOY" : "COWGIRL",
+                         1300 + random(-170, 170), -1730 + random(-140, 140));
+            // Local law: the jail, the sheriff's office, and a foot patrol
+            townFolk("LOCAL_COP", 1560, -2430);
+            townFolk("LOCAL_COP", 1620, -2400);
+            townFolk("LOCAL_COP", 1570, -1870);
+            townFolk("LOCAL_COP", 1300, -1140);
+            townFolk("LOCAL_COP", 1300, -560);
+            // Villagers: Main Street and Front Street, where the shops are
+            for (let i = 0; i < 9; i++)
+                townFolk(random() > 0.5 ? "VILLAGER_MALE" : "VILLAGER_FEMALE",
+                         1300 + random(-210, 210), -2300 + random(-500, 1400));
+            for (let i = 0; i < 8; i++)
+                townFolk(random() > 0.5 ? "VILLAGER_MALE" : "VILLAGER_FEMALE",
+                         1300 + random(-1000, 1000), -1140 + random(-160, 160));
+            for (let i = 0; i < 5; i++)
+                townFolk(random() > 0.5 ? "VILLAGER_MALE" : "VILLAGER_FEMALE",
+                         1300 + random(-230, 230), -400 + random(-330, 330));
             
             inFarmCutscene = true;
             farmPhase = 1;
@@ -917,12 +963,20 @@ function legacyGenerateMap() {
           buildings.push({ x: t.x, y: t.y, w: t.w, h: t.h, isShanty: !t.isApartment, isApartment: t.isApartment });
       }
 
+      // Moved south, clear of Dry Gulch.
+      //
+      // These sat at y -600..400 on Main Street, which was fine while the
+      // western town stopped at y -850 -- the comment below still says "north
+      // of the trailer park". Now that the town runs down to the church and the
+      // livery at y -180, they were parked in the middle of it, modern caravans
+      // between a schoolhouse and a stage depot. Pushed past the town's south
+      // archway, where they read as the shanty overflow outside the town line.
       let trailerParkCoords = [
-          {x: 1250, y: -600, w: 180, h: 80}, {x: 1250, y: -400, w: 180, h: 80},
-          {x: 1250, y: -200, w: 180, h: 80}, {x: 1250, y: 0, w: 180, h: 80},
-          {x: 1250, y: 200, w: 180, h: 80},  {x: 1250, y: 400, w: 180, h: 80},
-          {x: 1450, y: -500, w: 80, h: 180}, {x: 1450, y: -100, w: 80, h: 180},
-          {x: 1450, y: 300, w: 80, h: 180}
+          {x: 1250, y:  700, w: 180, h: 80}, {x: 1250, y:  900, w: 180, h: 80},
+          {x: 1250, y: 1100, w: 180, h: 80}, {x: 1250, y: 1300, w: 180, h: 80},
+          {x: 1250, y: 1500, w: 180, h: 80}, {x: 1250, y: 1700, w: 180, h: 80},
+          {x: 1450, y:  800, w: 80, h: 180}, {x: 1450, y: 1200, w: 80, h: 180},
+          {x: 1450, y: 1600, w: 80, h: 180}
       ];
       
       for (let t of trailerParkCoords) {
@@ -930,25 +984,134 @@ function legacyGenerateMap() {
       }
 /// --- WESTERN TOWN (North of Trailer Park) ---
       // --- WESTERN TOWN (North of Trailer Park) ---
+      // ###################################################################
+      //  DRY GULCH
+      //  Ten storefronts in two short columns was a film set, not a town. Laid
+      //  out properly it is a crossroads settlement: Main Street running north
+      //  to south, Front Street cutting east to west, a plaza where they meet,
+      //  and the trades that cannot sit on a high street -- livery, corrals,
+      //  smithy yard, depot, mine head, boot hill -- pushed out to the edges
+      //  where they belong. Roughly 2500 by 3400 units against the old 800 by
+      //  1200, with twenty-nine named premises instead of ten.
+      //
+      //  faceNorth mirrors a storefront so it looks back across the street it
+      //  fronts. Everything on the south side of Front Street uses it, which is
+      //  what stops the cross street reading as two rows of back walls.
+      // ###################################################################
+      const MAIN_X = 1300;          // Main Street centre line
+      const FRONT_Y = -1140;        // Front Street centre line (and the plaza)
+      const WEST_COL = MAIN_X - 290, EAST_COL = MAIN_X + 290;
+
       let westernBuildings = [
-          { x: 1010, y: -2000, w: 210, h: 140, sign: "HOTEL" },
-          { x: 1580, y: -2000, w: 170, h: 140, sign: "JAIL" },
+          // -- Main Street, north end: the respectable trades ---------------
+          { x: WEST_COL,      y: -2560, w: 210, h: 140, sign: "HOTEL" },
+          { x: EAST_COL - 10, y: -2560, w: 180, h: 140, sign: "JAIL" },
+          { x: WEST_COL + 10, y: -2280, w: 190, h: 130, sign: "TELEGRAPH" },
+          { x: EAST_COL,      y: -2280, w: 200, h: 130, sign: "ASSAY OFFICE" },
+          { x: WEST_COL,      y: -2000, w: 200, h: 135, sign: "GENERAL STORE" },
+          { x: EAST_COL - 10, y: -2000, w: 180, h: 135, sign: "SHERIFF" },
+          { x: WEST_COL + 5,  y: -1730, w: 230, h: 145, sign: "SALOON" },
+          { x: EAST_COL,      y: -1730, w: 195, h: 130, sign: "BANK" },
+          { x: WEST_COL,      y: -1470, w: 175, h: 125, sign: "DOCTOR" },
+          { x: EAST_COL + 5,  y: -1470, w: 200, h: 125, sign: "BLACKSMITH" },
 
-          { x: 1020, y: -1700, w: 190, h: 130, sign: "GENERAL STORE" },
-          { x: 1580, y: -1700, w: 170, h: 130, sign: "SHERIFF" },
+          // -- Front Street, north side (facing down onto the crossing) -----
+          { x: MAIN_X - 830, y: FRONT_Y - 210, w: 200, h: 130, sign: "FEED & SEED" },
+          { x: MAIN_X - 560, y: FRONT_Y - 210, w: 185, h: 130, sign: "BARBER" },
+          { x: MAIN_X + 560, y: FRONT_Y - 210, w: 210, h: 130, sign: "LAND OFFICE" },
+          { x: MAIN_X + 840, y: FRONT_Y - 210, w: 190, h: 130, sign: "GUNSMITH" },
 
-          { x: 1010, y: -1400, w: 230, h: 150, sign: "SALOON" },
-          { x: 1590, y: -1400, w: 190, h: 130, sign: "BANK" },
+          // -- Front Street, south side (mirrored to face back up) ----------
+          { x: MAIN_X - 830, y: FRONT_Y + 230, w: 205, h: 130, sign: "DRY GOODS", faceNorth: true },
+          { x: MAIN_X - 555, y: FRONT_Y + 230, w: 190, h: 130, sign: "BATH HOUSE", faceNorth: true },
+          { x: MAIN_X + 555, y: FRONT_Y + 230, w: 195, h: 130, sign: "TELEGRAPH CO", faceNorth: true },
+          { x: MAIN_X + 835, y: FRONT_Y + 230, w: 215, h: 130, sign: "UNDERTAKER", faceNorth: true },
 
-          { x: 1020, y: -1130, w: 160, h: 120, sign: "DOCTOR" },
-          { x: 1580, y: -1130, w: 190, h: 120, sign: "BLACKSMITH" },
+          // -- Main Street, south end --------------------------------------
+          { x: WEST_COL,      y: -720, w: 195, h: 130, sign: "SCHOOLHOUSE" },
+          { x: EAST_COL,      y: -720, w: 205, h: 130, sign: "MERCANTILE" },
+          { x: WEST_COL + 10, y: -450, w: 200, h: 135, sign: "STAGE DEPOT" },
+          { x: EAST_COL - 5,  y: -450, w: 190, h: 130, sign: "PRINT SHOP" },
+          { x: WEST_COL - 10, y: -180, w: 185, h: 175, sign: "CHURCH", isChurch: true },
+          { x: EAST_COL + 15, y: -180, w: 240, h: 140, sign: "LIVERY STABLE", isLivery: true },
 
-          { x: 1000, y: -850, w: 170, h: 170, sign: "CHURCH", isChurch: true },
-          { x: 1590, y: -850, w: 230, h: 130, sign: "LIVERY STABLE", isLivery: true }
+          // -- Outskirts ----------------------------------------------------
+          { x: MAIN_X - 1080, y: -1900, w: 230, h: 150, sign: "MILL" },
+          { x: MAIN_X + 1120, y: -1900, w: 215, h: 145, sign: "STOCKYARD OFFICE" },
+          { x: MAIN_X - 1120, y: -420,  w: 200, h: 140, sign: "TANNERY" },
+          { x: MAIN_X + 1150, y: -430,  w: 245, h: 150, sign: "FREIGHT BARN", isLivery: true },
+          { x: MAIN_X + 30,   y: -2900, w: 260, h: 160, sign: "MINE HEAD" }
       ];
       for (let t of westernBuildings) {
-          buildings.push({ x: t.x, y: t.y, w: t.w, h: t.h, isWesternBldg: true, signText: t.sign, isChurch: t.isChurch, isLivery: t.isLivery });
+          buildings.push({ x: t.x, y: t.y, w: t.w, h: t.h, isWesternBldg: true,
+                           signText: t.sign, isChurch: t.isChurch, isLivery: t.isLivery,
+                           faceNorth: !!t.faceNorth });
       }
+
+      // -- Street furniture -------------------------------------------------
+      // Hand-placed rather than scattered: a trough belongs beside a hitching
+      // rail, barrels stack against a wall, hay goes by the stable. Randomly
+      // strewn props are what makes a town look like a prop bin.
+      const townProps = [
+          // Water troughs and barrels along Main Street, alternating kerbs
+          { x: MAIN_X - 150, y: -2420, w: 74, h: 30, isCrateProp: true },
+          { x: MAIN_X + 150, y: -2150, w: 74, h: 30, isCrateProp: true },
+          { x: MAIN_X - 150, y: -1870, w: 74, h: 30, isCrateProp: true },
+          { x: MAIN_X + 150, y: -1600, w: 74, h: 30, isCrateProp: true },
+          { x: MAIN_X - 150, y: -1330, w: 74, h: 30, isCrateProp: true },
+          { x: MAIN_X + 150, y: -600,  w: 74, h: 30, isCrateProp: true },
+          { x: MAIN_X - 150, y: -330,  w: 74, h: 30, isCrateProp: true },
+          // Crates stacked outside the stores that would have them
+          { x: WEST_COL + 130, y: -1930, w: 44, h: 44, isCrateProp: true },
+          { x: WEST_COL + 130, y: -1880, w: 38, h: 38, isCrateProp: true },
+          { x: EAST_COL + 130, y: -655,  w: 44, h: 44, isCrateProp: true },
+          { x: MAIN_X - 700,  y: FRONT_Y - 120, w: 44, h: 44, isCrateProp: true },
+          { x: MAIN_X + 950,  y: FRONT_Y + 150, w: 44, h: 44, isCrateProp: true },
+          // Hay by the stable, the freight barn and the mill
+          { x: EAST_COL + 170, y: -100, w: 60, h: 46, isHayBale: true },
+          { x: EAST_COL + 170, y: -30,  w: 60, h: 46, isHayBale: true },
+          { x: MAIN_X + 1150,  y: -320, w: 60, h: 46, isHayBale: true },
+          { x: MAIN_X - 1080,  y: -1790, w: 60, h: 46, isHayBale: true },
+          // Wagons: one at the depot, one at the freight barn, one broken down
+          { x: WEST_COL + 150, y: -370, w: 96, h: 54, isWagonProp: true },
+          { x: MAIN_X + 1010,  y: -430, w: 96, h: 54, isWagonProp: true },
+          { x: MAIN_X - 980,   y: -1000, w: 96, h: 54, isWagonProp: true },
+          // The town well on the plaza, and a second one out by the corrals
+          { x: MAIN_X - 90, y: FRONT_Y + 60, w: 58, h: 58, isWell: true },
+          { x: MAIN_X + 1010, y: -1750, w: 58, h: 58, isWell: true },
+          // Water towers: one for the town, one for the depot
+          { x: MAIN_X + 430, y: -2700, w: 72, h: 72, isWaterTower: true },
+          { x: MAIN_X - 430, y: -560,  w: 72, h: 72, isWaterTower: true },
+          // Cacti on the approaches, where nothing has been cleared
+          { x: MAIN_X - 1320, y: -2300, w: 40, h: 66, isCactusProp: true },
+          { x: MAIN_X + 1400, y: -2500, w: 40, h: 72, isCactusProp: true },
+          { x: MAIN_X - 1360, y: -800,  w: 40, h: 60, isCactusProp: true },
+          { x: MAIN_X + 1420, y: -60,   w: 40, h: 70, isCactusProp: true },
+          { x: MAIN_X - 300,  y: -3080, w: 40, h: 64, isCactusProp: true },
+          { x: MAIN_X + 340,  y: -3120, w: 40, h: 58, isCactusProp: true }
+      ];
+      for (let t of townProps) buildings.push(t);
+
+      // -- Corrals ----------------------------------------------------------
+      // Two stock pens east of the livery, built from fence segments so they
+      // block movement and take damage like every other fence in the game.
+      const pen = (cx, cy, pw, ph) => {
+          const SEG = 90;
+          for (let px = -pw / 2; px < pw / 2; px += SEG) {
+              const seg = Math.min(SEG, pw / 2 - px);
+              buildings.push({ x: cx + px + seg / 2, y: cy - ph / 2, w: seg, h: 14, isFence: true, hp: 60, maxHp: 60 });
+              buildings.push({ x: cx + px + seg / 2, y: cy + ph / 2, w: seg, h: 14, isFence: true, hp: 60, maxHp: 60 });
+          }
+          for (let py = -ph / 2; py < ph / 2; py += SEG) {
+              const seg = Math.min(SEG, ph / 2 - py);
+              buildings.push({ x: cx - pw / 2, y: cy + py + seg / 2, w: 14, h: seg, isFence: true, hp: 60, maxHp: 60 });
+              // East side left open as the gate
+              if (py > -ph / 2 + SEG) buildings.push({ x: cx + pw / 2, y: cy + py + seg / 2, w: 14, h: seg, isFence: true, hp: 60, maxHp: 60 });
+          }
+      };
+      pen(MAIN_X + 900, -160, 460, 380);
+      pen(MAIN_X + 900, -1500, 420, 340);
+      pen(MAIN_X - 950, -1500, 400, 320);
 
       buildings.push({ x: 1300, y: -1140, w: 70, h: 70, isWaterTower: true });
       buildings.push({ x: 1300, y: -1020, w: 40, h: 40, isWell: true });
@@ -4602,6 +4765,13 @@ function drawBuildingPads() {
     // theirs drawn live.
     if (BIOME_ACTIVE && !b.isAuthored) continue;
 	  if ((currentLevel === 1 || currentLevel === 2) && b.isGrassLot) continue;
+    // Street furniture stands ON the ground; it does not have a graded lot laid
+    // out around it. A barrel, a well or a cactus with a 40-unit apron of paler
+    // earth around it reads as a tile someone dropped, which is what every
+    // small prop in Dry Gulch looked like once the town filled up.
+    if (b.isCrateProp || b.isHayBale || b.isWagonProp || b.isWell ||
+        b.isWaterTower || b.isCactusProp || b.isTumbleweedProp || b.isFence ||
+        b.isRock) continue;
     if (currentLevel !== 1 && currentLevel !== 2 && currentLevel !== 6 && !b.isStreetLight && !b.isDumpster && !b.isCar && !b.isPalm && !b.isAlienPlant && !b.isEnergyPole && !b.isPinkPlanet && !b.isPyramid && !b.isChip) {
         let bG = currentLevel === 3 ? 160 : (currentLevel === 4 ? 110 : 170);
         if (currentLevel === 3) fill(205, 175, 130); else fill(bG);
@@ -4755,22 +4925,27 @@ function legacyDrawGround(skipBase) {
       }
 // --- WESTERN TOWN GROUND ---
       // Bounded region, so cull it as a whole rather than per-primitive.
-      if (typeof inView !== 'function' || inView(1300, -1390, 1150)) {
+      if (typeof inView !== 'function' || inView(1300, -1500, 2400)) {
       noStroke();
       // Feathered so the town's packed earth fades into the surrounding desert
       // rather than ending on a straight line. These used to be flat slabs,
       // which was fine over the old flat ground but cuts hard rectangles across
       // the streamed terrain.
-      softRect(800, -2180, 1000, 1580, 206, 179, 138, 210, 150, 6, 10);
-      softRect(1300 - 130, -2150, 260, 1470, 222, 197, 152, 215, 55, 5, 6);
-      softBlob(1300, -1140, 300, 300, 213, 187, 143, 190); // open plaza circle
+      // Packed earth over the whole settlement, then the two streets, then the
+      // plaza where they cross. Grown to match the town: the old footprint
+      // stopped 1500 units short of the church and the depot, so the southern
+      // half of Main Street ran over open desert.
+      softRect(560, -3220, 1500, 3420, 206, 179, 138, 205, 170, 6, 10);
+      softRect(1300 - 150, -3180, 300, 3320, 222, 197, 152, 214, 60, 5, 6);   // Main St
+      softRect(200, -1300, 2200, 300, 220, 195, 150, 206, 60, 5, 6);          // Front St
+      softBlob(1300, -1140, 420, 400, 215, 189, 145, 195);                    // plaza
 
       // Continuous boardwalk running both sides of Main Street
       fill(150, 115, 75); noStroke();
-      rect(880, -2080, 270, 1330);
-      rect(1460, -2080, 260, 1330);
+      rect(880, -2700, 270, 2620);
+      rect(1460, -2700, 260, 2620);
       stroke(112, 84, 52, 160); strokeWeight(1);
-      for (let py = -2075; py < -755; py += 16) {
+      for (let py = -2695; py < -80; py += 16) {
           line(880, py, 1150, py);
           line(1460, py, 1720, py);
       }
@@ -4778,10 +4953,15 @@ function legacyDrawGround(skipBase) {
 
       // Wagon wheel ruts, broken by the plaza
       stroke(176, 149, 109, 140); strokeWeight(6); noFill();
-      line(1300 - 48, -2140, 1300 - 48, -1290);
-      line(1300 + 48, -2140, 1300 + 48, -1290);
-      line(1300 - 48, -990, 1300 - 48, -670);
-      line(1300 + 48, -990, 1300 + 48, -670);
+      line(1300 - 48, -3120, 1300 - 48, -1350);
+      line(1300 + 48, -3120, 1300 + 48, -1350);
+      line(1300 - 48, -930, 1300 - 48, -120);
+      line(1300 + 48, -930, 1300 + 48, -120);
+      // Front Street carries the same wheel ruts east and west of the plaza.
+      line(280, -1188, 1080, -1188);
+      line(280, -1092, 1080, -1092);
+      line(1520, -1188, 2320, -1188);
+      line(1520, -1092, 2320, -1092);
       noStroke();
 
       // Dusty speckle texture (pre-generated, stays still frame to frame)
@@ -4794,15 +4974,15 @@ function legacyDrawGround(skipBase) {
 
       // Town entrance archway
       stroke(90, 62, 35); strokeWeight(10); noFill();
-      line(1160, -600, 1160, -700);
-      line(1440, -600, 1440, -700);
+      line(1160, 60, 1160, -40);
+      line(1440, 60, 1440, -40);
       strokeWeight(14);
-      line(1150, -700, 1450, -700);
+      line(1150, -40, 1450, -40);
       noStroke();
       fill(210, 185, 145); stroke(90, 62, 35); strokeWeight(2);
-      rect(1230, -685, 140, 34, 3);
+      rect(1230, -25, 140, 34, 3);
       fill(30); noStroke(); textAlign(CENTER, CENTER); textSize(14); textFont('sans-serif');
-      text("DRY GULCH", 1300, -668);
+      text("DRY GULCH", 1300, -8);
       }
   } else {
     // LEVEL 4 & 5 GENERIC FLOOR
@@ -5976,6 +6156,65 @@ this.punchHitCount = 0;
     if (eT === "FARMER_MALE") { this.hp = 100; this.shirtCol = color(220); this.pantsCol = color(40, 100, 200); this.isFriendly = true; this.isNeutral = true; this.currentWeapon = WEAPONS.PISTOL; }
     if (eT === "FARMER_FEMALE") { this.hp = 100; this.bodyW = 16; this.bodyH = 25; this.shirtCol = color(245); this.pantsCol = color(245); this.isFriendly = true; this.isNeutral = true; this.currentWeapon = WEAPONS.PISTOL; }
 
+    // --- DRY GULCH TOWNSFOLK -------------------------------------------
+    // All of them start neutral, so they wander the town until somebody shoots
+    // one. The wake-up cascade in takeDamage() is written against isNeutral
+    // rather than any particular eType, so the whole town turns at once
+    // without any of these needing to be named there.
+    if (eT === "COWBOY") {
+        this.hp = 130;
+        this.shirtCol = color(158, 122, 84);      // canvas work shirt
+        this.pantsCol = color(72, 92, 126);       // denim
+        this.isFriendly = true; this.isNeutral = true;
+        this.currentWeapon = WEAPONS.REVOLVER;
+        this.hatCol = color(96, 72, 46);
+        this.vestCol = color(88, 62, 40);
+        this.kerchiefCol = random() > 0.5 ? color(168, 54, 46) : color(58, 84, 122);
+    }
+    if (eT === "COWGIRL") {
+        this.hp = 120; this.bodyW = 16; this.bodyH = 25;
+        this.shirtCol = color(196, 156, 118);     // blouse
+        this.pantsCol = color(112, 76, 54);       // riding skirt
+        this.isFriendly = true; this.isNeutral = true;
+        this.currentWeapon = WEAPONS.REVOLVER;
+        this.hatCol = color(126, 96, 62);
+        this.vestCol = color(146, 92, 62);
+        this.kerchiefCol = random() > 0.5 ? color(178, 96, 120) : color(140, 118, 58);
+        this.hairCol = random() > 0.5 ? color(122, 74, 38) : color(52, 38, 28);
+    }
+    // Local law. Period-correct sidearm for a frontier deputy would be a
+    // revolver too, so the coach gun is what distinguishes them in a fight --
+    // shorter reach, much nastier up close.
+    if (eT === "LOCAL_COP") {
+        this.hp = 190;
+        this.shirtCol = color(74, 78, 92);        // dark wool coat
+        this.pantsCol = color(52, 54, 64);
+        this.isFriendly = true; this.isNeutral = true;
+        this.currentWeapon = WEAPONS.COACH_GUN;
+        this.hatCol = color(46, 44, 52);
+    }
+    // Ordinary townsfolk: no gun, and no interest in a gunfight. See the FLEE
+    // handling in update() -- when the town turns, these run for cover instead
+    // of charging, which is the only sane thing for a shopkeeper to do and
+    // keeps a street brawl from turning into forty unarmed suicides.
+    if (eT === "VILLAGER_MALE") {
+        this.hp = 90;
+        this.shirtCol = color(206, 194, 168);     // homespun
+        this.pantsCol = color(96, 84, 66);
+        this.isFriendly = true; this.isNeutral = true; this.isCoward = true;
+        this.currentWeapon = WEAPONS.PISTOL;      // never fired; kept for the pose
+        this.hatCol = color(84, 74, 58);
+    }
+    if (eT === "VILLAGER_FEMALE") {
+        this.hp = 85; this.bodyW = 16; this.bodyH = 25;
+        this.shirtCol = color(184, 168, 196);     // prairie dress
+        this.pantsCol = color(184, 168, 196);
+        this.isFriendly = true; this.isNeutral = true; this.isCoward = true;
+        this.currentWeapon = WEAPONS.PISTOL;
+        this.bonnetCol = color(228, 220, 204);
+        this.hairCol = random() > 0.5 ? color(122, 74, 38) : color(60, 44, 30);
+    }
+
     // --- LEVEL 4 MILITARY NEUTRAL ---
     if (eT === "MILITARY_NEUTRAL") { 
         this.hp = 150; 
@@ -6025,7 +6264,11 @@ this.punchHitCount = 0;
             });
         }
     }
-    this.dead = false; this.aimAngle = 0; this.moveAngle = 0; this.lastMoveAngle = 0; this.currentWeapon = WEAPONS.PISTOL; this.fireTimer = 0; this.reloadTimer = 0; this.orbChargeTimer = 0; 
+    // This line used to assign WEAPONS.PISTOL unconditionally, which runs after
+    // every eType block above and therefore silently disarmed anything that had
+    // chosen its own sidearm -- the cowboys came out holding pistols. The
+    // default only applies when the type did not pick one.
+    this.dead = false; this.aimAngle = 0; this.moveAngle = 0; this.lastMoveAngle = 0; if (!this.currentWeapon) this.currentWeapon = WEAPONS.PISTOL; this.fireTimer = 0; this.reloadTimer = 0; this.orbChargeTimer = 0; 
     this.dashTimer = 0; this.dashCooldown = 0; this.dashCount = 0; this.dashWindow = 0; this.meleeTimer = 0; this.meleeCooldown = 0; this.meleePhase = 0; this.meleeComboTimer = 0; this.isBackhand = false; this.meleeQueued = false;
     this.throwAnimTimer = 0; this.cannonAmmo = 4; this.cannonCooldown = 0; this.cannonFireDelay = 0; this.cannonCharge = 0;
     this.muzzleFlash = 0; this.decals = []; this.isMoving = false; this.walkCycle = 0; this.armDrag = 0; this.lastHitFrame = 0; this.frameDamage = 0; this.shieldFlashTimer = 0; this.shieldBurstTimer = 0;
@@ -6036,7 +6279,9 @@ this.punchHitCount = 0;
         "ASSAULT RIFLE": WEAPONS.ASSAULT_RIFLE.maxAmmo, 
         "SHOTGUN": WEAPONS.SHOTGUN.maxAmmo, 
         "ROCKET LAUNCHER": WEAPONS.ROCKET_LAUNCHER.maxAmmo,
-        "TASER": WEAPONS.TASER.maxAmmo // <--- ADDED TASER
+        "TASER": WEAPONS.TASER.maxAmmo, // <--- ADDED TASER
+        "REVOLVER": WEAPONS.REVOLVER.maxAmmo,
+        "COACH GUN": WEAPONS.COACH_GUN.maxAmmo
     };
     
     this.mags = { 
@@ -6046,7 +6291,11 @@ this.punchHitCount = 0;
         "ASSAULT RIFLE": 0, 
         "SHOTGUN": 0, 
         "ROCKET LAUNCHER": 0,
-        "TASER": Infinity // <--- ADDED TASER
+        "TASER": Infinity, // <--- ADDED TASER
+        // Townsfolk reload from their own belt loops forever; the player never
+        // picks these up, so a spare-mag count would never be read.
+        "REVOLVER": Infinity,
+        "COACH GUN": Infinity
     };
 
     this.stunTimer = 0;
@@ -6073,7 +6322,8 @@ this.skeletonTimer = 0;
                 e.isNeutral = false;
                 e.isFriendly = false; // They are now hostile to the player
 
-                e.state = "CHASE";
+                // Shopkeepers and their families do not draw on a gunman.
+                e.state = e.isCoward ? "FLEE" : "CHASE";
                 e.loseSightTimer = 1200; // <--- NEW: Force 20 seconds of hard aggro
                 
                 // <--- NEW: Give them the player's exact location to swarm!
@@ -6761,6 +7011,30 @@ if (this.eType === "COW") {
     }
 
     this.forceNudge();
+
+    // --- FLEE ---------------------------------------------------------------
+    // Unarmed townsfolk once the town has turned. They run from the player,
+    // pick a new bearing when they hit something, and never shoot -- returning
+    // here before the aiming and firing code is what makes them harmless
+    // rather than simply bad shots.
+    if (this.state === "FLEE") {
+        const away = atan2(this.y - (player ? player.y : this.y),
+                           this.x - (player ? player.x : this.x));
+        if (this.fleeBias === undefined) this.fleeBias = random(-0.5, 0.5);
+        const a = away + this.fleeBias;
+        this.moveAngle = a;
+        this.aimAngle = a;                       // looking where they are going
+        const spd = 3.1;
+        const m = this.attemptMove(cos(a) * spd, sin(a) * spd);
+        if (m.x === 0 && m.y === 0) this.fleeBias = random(-PI, PI);   // cornered
+        this.isMoving = (m.x !== 0 || m.y !== 0);
+        if (this.isMoving) this.walkCycle += 0.35;
+        // Far enough away and out of the fight: settle back into wandering.
+        if (player && dist(this.x, this.y, player.x, player.y) > 1600) {
+            this.state = "WANDER";
+        }
+        return;
+    }
 
     if (this.isNeutral) {
         if (this.state !== "PATROL") {
@@ -7548,6 +7822,66 @@ if (this.isPlayer) {
         rect(this.bodyW/2 - 8, -this.bodyH/2 + 2, 4, 8); // right strap
     }
 
+    // --- DRY GULCH ATTIRE ---------------------------------------------
+    if (this.eType === "COWBOY" || this.eType === "COWGIRL") {
+        // Open leather vest over the shirt, laced up the front.
+        fill(this.vestCol || color(88, 62, 40));
+        arc(-4, 0, this.bodyW + 2, this.bodyH, HALF_PI, PI + HALF_PI, CHORD);
+        fill(this.pantsCol);
+        rect(-this.bodyW / 2 + 3, -this.bodyH / 2 + 9, this.bodyW - 6, this.bodyH - 11, 3);
+        // Gunbelt with a bright buckle, and the holster on the hip.
+        fill(64, 44, 28);
+        rect(-this.bodyW / 2 + 2, -3, this.bodyW - 4, 5, 1);
+        fill(214, 186, 96); rect(-1, -3, 4, 5);
+        fill(58, 40, 26); rect(-this.bodyW / 2 + 1, 5, 6, 9, 2);
+        // Neckerchief knotted at the throat.
+        fill(this.kerchiefCol || color(168, 54, 46));
+        triangle(this.bodyW / 2 - 5, -5, this.bodyW / 2 - 5, 5, this.bodyW / 2 - 12, 0);
+    }
+    if (this.eType === "LOCAL_COP") {
+        // Long wool coat, buttoned, with the tin star on the left breast.
+        fill(this.pantsCol);
+        rect(-this.bodyW / 2 + 2, -this.bodyH / 2 + 7, this.bodyW - 4, this.bodyH - 7, 3);
+        fill(this.shirtCol);
+        arc(-2, 0, this.bodyW, this.bodyH, HALF_PI, PI + HALF_PI, CHORD);
+        stroke(28, 30, 36); strokeWeight(1);
+        line(2, -this.bodyH / 2 + 3, 2, this.bodyH / 2 - 3);
+        noStroke();
+        fill(38, 40, 48);
+        ellipse(1, -6, 2.5, 2.5); ellipse(1, 0, 2.5, 2.5); ellipse(1, 6, 2.5, 2.5);
+        // Five-pointed star
+        push(); translate(4, -7); fill(226, 206, 118);
+        beginShape();
+        for (let i = 0; i < 10; i++) {
+            const a2 = -HALF_PI + i * PI / 5, rr = (i % 2 === 0) ? 4.4 : 1.9;
+            vertex(cos(a2) * rr, sin(a2) * rr);
+        }
+        endShape(CLOSE);
+        fill(160, 140, 60); ellipse(0, 0, 1.6, 1.6);
+        pop();
+        // Gunbelt with shell loops
+        fill(56, 40, 28); rect(-this.bodyW / 2 + 2, -2, this.bodyW - 4, 5, 1);
+        fill(190, 160, 70);
+        for (let i = -4; i <= 4; i += 4) rect(i, -2, 1.6, 5);
+    }
+    if (this.eType === "VILLAGER_MALE") {
+        // Homespun shirt with braces and a patched apron front.
+        fill(this.pantsCol);
+        rect(-this.bodyW / 2 + 2, -this.bodyH / 2 + 10, this.bodyW - 4, this.bodyH - 10, 3);
+        fill(72, 62, 48);
+        rect(-this.bodyW / 2 + 4, -this.bodyH / 2 + 2, 3.4, 10);
+        rect(this.bodyW / 2 - 7, -this.bodyH / 2 + 2, 3.4, 10);
+        fill(160, 148, 126, 190);
+        rect(-2, -6, 9, 12, 2);
+    }
+    if (this.eType === "VILLAGER_FEMALE") {
+        // Pinafore over the dress, with a lace collar.
+        fill(232, 226, 214, 210);
+        rect(-this.bodyW / 2 + 3, -4, this.bodyW - 6, this.bodyH / 2 + 2, 2);
+        fill(246, 242, 232);
+        arc(this.bodyW / 2 - 6, 0, 8, 12, HALF_PI, PI + HALF_PI, CHORD);
+    }
+
     // Female Farmer Cutout
     if (this.eType === "FARMER_FEMALE") {
         fill(235, 180, 140);
@@ -7555,7 +7889,8 @@ if (this.isPlayer) {
     }
 
     // --- FEMALE PISTOL & FARMER FEMALE BREASTS ---
-    if (this.eType === "FEMALE_PISTOL" || this.eType === "FARMER_FEMALE") {
+    if (this.eType === "FEMALE_PISTOL" || this.eType === "FARMER_FEMALE" ||
+        this.eType === "COWGIRL" || this.eType === "VILLAGER_FEMALE") {
         if (this.hitFlash > 0) fill(255); else fill(this.shirtCol);
         stroke(this.eType === "FARMER_FEMALE" ? 200 : 0); // Light crease for white dress
         strokeWeight(1.5); 
@@ -7584,7 +7919,9 @@ if (this.isPlayer) {
     let lAY = this.eType === "ARMORED" ? -30 : -14, rAY = this.eType === "ARMORED" ? 30 : 11;
     let a = 255; let f = this.fP || 0; let sK = this.isCharred ? color(50, 40, 40, a) : color(235, 180, 140, a);
 
-    let isNeutralFarmer = this.isNeutral && (this.eType === "FARMER_MALE" || this.eType === "FARMER_FEMALE");
+    const TOWNSFOLK = ["FARMER_MALE", "FARMER_FEMALE", "COWBOY", "COWGIRL",
+                       "LOCAL_COP", "VILLAGER_MALE", "VILLAGER_FEMALE"];
+    let isNeutralFarmer = this.isNeutral && TOWNSFOLK.indexOf(this.eType) !== -1;
 
     // --- NEUTRAL ARM SWING OVERRIDE ---
         if (isNeutralFarmer) {
@@ -7860,6 +8197,58 @@ if (lArmSwing > frontThreshold || lArmSwing < backThreshold) {
         fill(235, 180, 140); ellipse(hX, hY, 11, 11); 
         fill(15); arc(hX, hY, 12, 12, HALF_PI, PI + HALF_PI);
         push(); translate(hX - 5, hY); rotate(radians(this.isMoving ? sin(frameCount * 0.3) * 15 : 0)); ellipse(-6, 0, 12, 6); pop();
+    } else if (this.eType === "COWBOY" || this.eType === "COWGIRL") {
+        fill(235, 180, 140); ellipse(hX, hY, 11, 11);
+        if (this.eType === "COWGIRL") {
+            // Braid down the back, swinging with the walk.
+            push(); translate(hX - 5, hY);
+            rotate(radians(this.isMoving ? sin(frameCount * 0.3) * 15 : 0));
+            fill(this.hairCol || color(122, 74, 38)); ellipse(-7, 0, 13, 6);
+            pop();
+        }
+        push(); translate(hX, hY);
+        const hc = this.hatCol || color(96, 72, 46);
+        // Stetson: wide oval brim, then the crown, then a crease down it and a
+        // hatband where the two meet. Read from above that silhouette is the
+        // whole character of the hat.
+        const bw = this.eType === "COWGIRL" ? 25 : 28;
+        fill(red(hc) * 0.82, green(hc) * 0.82, blue(hc) * 0.82);
+        ellipse(0, 0, bw, bw * 0.93);
+        fill(hc); ellipse(0, 0, bw - 5, bw * 0.93 - 5);
+        fill(red(hc) * 1.18 + 12, green(hc) * 1.18 + 12, blue(hc) * 1.18 + 12);
+        ellipse(-1, 0, bw - 13, bw * 0.93 - 12);
+        fill(42, 30, 20); rect(-((bw - 13) / 2), -1.4, bw - 13, 2.8);
+        stroke(red(hc) * 0.6, green(hc) * 0.6, blue(hc) * 0.6); strokeWeight(1.2);
+        line(-((bw - 15) / 2), 0, (bw - 15) / 2, 0);
+        noStroke();
+        pop();
+    } else if (this.eType === "LOCAL_COP") {
+        fill(235, 180, 140); ellipse(hX, hY, 11, 11);
+        push(); translate(hX, hY);
+        // Flat-brimmed lawman's hat, darker and squarer than a drover's.
+        fill(34, 32, 40); ellipse(0, 0, 26, 24);
+        fill(this.hatCol || color(46, 44, 52)); ellipse(0, 0, 17, 16);
+        fill(210, 188, 104); rect(-4, -1.4, 8, 2.8);   // band badge
+        pop();
+    } else if (this.eType === "VILLAGER_MALE") {
+        fill(235, 180, 140); ellipse(hX, hY, 11, 11);
+        push(); translate(hX, hY);
+        // Soft flat cap with a stubby peak toward the front.
+        fill(this.hatCol || color(84, 74, 58)); ellipse(0, 0, 15, 14);
+        fill(64, 56, 44); arc(0, 0, 19, 14, -0.9, 0.9, CHORD);
+        pop();
+    } else if (this.eType === "VILLAGER_FEMALE") {
+        fill(235, 180, 140); ellipse(hX, hY, 11, 11);
+        push(); translate(hX, hY);
+        fill(this.hairCol || color(122, 74, 38));
+        arc(0, 0, 12, 12, HALF_PI, PI + HALF_PI);
+        // Sun bonnet: deep scoop round the back of the head, brim to the front,
+        // ribbon tied under the chin.
+        fill(this.bonnetCol || color(228, 220, 204));
+        arc(-1, 0, 21, 19, HALF_PI, PI + HALF_PI, CHORD);
+        fill(214, 204, 184); arc(2, 0, 13, 17, -HALF_PI, HALF_PI, CHORD);
+        fill(178, 152, 168); rect(-2, 7.5, 7, 2, 1);
+        pop();
     } else if (this.eType === "FARMER_MALE") {
         fill(235, 180, 140); ellipse(hX, hY, 11, 11); 
         push(); translate(hX, hY);
