@@ -10228,10 +10228,18 @@ window.militaryToBringF = state.militaryToBringF || 0;
         if (state.biomeState) biomeState = state.biomeState;
         if (state.currentBiome) currentBiome = state.currentBiome;
         if (typeof state.worldTimeMs === 'number') worldTimeMs = state.worldTimeMs;
-        // startAtLevel() rolled fresh weather on the way in; put the saved sky back.
-        isRaining = !!state.isRaining;
+        // Roll the sky fresh, exactly the way walking into a sector does.
+        //
+        // This used to restore state.isRaining from the save and then set
+        // lastWeatherRollHour to the current hour, which suppressed the next
+        // roll as well. Between them, a save made on a dry day came back dry
+        // every single time and stayed dry for a further in-game hour -- two
+        // real minutes -- so changing a biome's rain probability had no visible
+        // effect however many times you reloaded. Entry rolls; loading is an
+        // entry.
+        isRaining = false;
         lastWeatherRollHour = Math.floor(worldHour());
-        applyBiomeWeather();
+        initBiomeWeather();
         if (state.townsData) townsData = state.townsData;
         if (state.viewingTownId) viewingTownId = state.viewingTownId;
         window.farmXP = Number(state.farmXP) || 0; window.milXP = Number(state.milXP) || 0; 
@@ -12031,16 +12039,24 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
         const lawn = mixc(p.grass, p.dark, 0.18);
         g.fill(lawn[0], lawn[1], lawn[2], 232);
         g.rect(inX, inY, inW, inW);
+        // Far fewer, far larger, far fainter.
+        //
+        // Softening the stamps stopped them showing their own edges, but 74 of
+        // them per chunk still piles up into visible clumping wherever several
+        // land together -- the "still way too many everywhere". Ground variation
+        // wants to be low frequency: a handful of broad, weak passes reads as
+        // sun and wear across a lawn, where dozens of small ones read as
+        // blotches however soft each one is.
         const lit = mixc(p.grass, [255, 255, 255], 0.12);
-        for (let i = 0; i < 34; i++) {
+        for (let i = 0; i < 7; i++) {
           const rx = inX + rng() * inW, ry = inY + rng() * inW;
-          softStamp(g, rx, ry, 150 + rng() * 300, 120 + rng() * 230,
-                    lit, 34 + rng() * 44);
+          softStamp(g, rx, ry, 420 + rng() * 460, 340 + rng() * 380,
+                    lit, 16 + rng() * 18);
         }
-        for (let i = 0; i < 40; i++) {
+        for (let i = 0; i < 6; i++) {
           const rx = inX + rng() * inW, ry = inY + rng() * inW;
-          softStamp(g, rx, ry, 55 + rng() * 140, 44 + rng() * 100,
-                    p.dark, 26 + rng() * 40);
+          softStamp(g, rx, ry, 260 + rng() * 380, 210 + rng() * 300,
+                    p.dark, 13 + rng() * 15);
         }
         // Desire path: several overlapping passes rather than one thick
         // stroke, so it reads as ground worn bare by feet instead of a line
@@ -12067,9 +12083,10 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
         g.fill(yard[0], yard[1], yard[2], 190);
         g.rect(inX, inY, inW, inW);
         const patch = mixc(p.base, p.alt, 0.7);
-        for (let i = 0; i < 30; i++) {
+        for (let i = 0; i < 7; i++) {
           const rx = inX + rng() * inW, ry = inY + rng() * inW;
-          softStamp(g, rx, ry, (70 + rng() * 210) * 1.55, (55 + rng() * 160) * 1.55, [patch[0], patch[1], patch[2]], (40 + rng() * 55) * 1.4);
+          softStamp(g, rx, ry, 300 + rng() * 420, 240 + rng() * 330,
+                    [patch[0], patch[1], patch[2]], 22 + rng() * 26);
         }
 
         // Service alley: one asphalt run through the block, joining the street
@@ -12092,14 +12109,33 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
           for (const [vx, vy] of pts) g.vertex(vx, vy);
         }
         g.endShape(CLOSE);
-        // Kerb lip and the worn strip down the middle where tyres run
-        g.fill(0, 0, 0, 40);
-        for (let s = 0; s <= 8; s++) {
-          const t = s / 8;
-          const off = along + Math.sin(t * PI) * kink;
-          const run = inY - 40 + t * (inW + 80);
-          if (vert) g.ellipse(off, run, 62, 130); else g.ellipse(run, off, 130, 62);
+        // Wheel ruts down the alley.
+        //
+        // This was nine flat black 62x130 ellipses stamped along the spine at
+        // even intervals -- the "ugly oval bunch in a line" that showed up on
+        // every block with a service alley, which is most of them. Nine hard
+        // ellipses in a row is the one thing tyres cannot leave behind.
+        //
+        // Vehicles wear two continuous tracks, one under each wheel, darkest in
+        // the middle of the run and fading out where traffic joins the street.
+        // Drawn as continuous strokes along the same spine, so the alley now
+        // reads as used rather than dotted.
+        g.noFill();
+        for (const [wgt, alp] of [[26, 9], [16, 11], [9, 13]]) {
+          for (const wheel of [-19, 19]) {
+            g.stroke(0, 0, 0, alp); g.strokeWeight(wgt);
+            g.beginShape();
+            for (let q = 0; q <= 14; q++) {
+              const t = q / 14;
+              const fade = Math.min(1, Math.min(t, 1 - t) * 4.5);
+              const off = along + Math.sin(t * PI) * kink + wheel * fade;
+              const run = inY - 40 + t * (inW + 80);
+              if (vert) g.vertex(off, run); else g.vertex(run, off);
+            }
+            g.endShape();
+          }
         }
+        g.noStroke();
 
         // Two or three hard pads, irregular, with joints only on the pads.
         const pads = 2 + (rng() > 0.5 ? 1 : 0);
@@ -12115,7 +12151,7 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
           for (let l = px2 + 60 + rng() * 40; l < px2 + pw - 20; l += 70 + rng() * 50) g.line(l, py2, l, py2 + ph);
           for (let l = py2 + 60 + rng() * 40; l < py2 + ph - 20; l += 70 + rng() * 50) g.line(px2, l, px2 + pw, l);
           g.noStroke();
-          softStamp(g, px2 + pw * rng(), py2 + ph * rng(), (30 + rng() * 70) * 1.55, (24 + rng() * 50) * 1.55, [0, 0, 0], (20 + rng() * 26) * 1.4);
+          softStamp(g, px2 + pw * rng(), py2 + ph * rng(), (30 + rng() * 70) * 2.1, (24 + rng() * 50) * 2.1, [0, 0, 0], (20 + rng() * 26) * 0.62);
         }
 
         // Weeds along the sidewalk edge, where nothing gets driven over
@@ -12187,7 +12223,7 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
         const rx = ox + rng() * CHUNK_W, ry = oy + rng() * CHUNK_W;
         const lx = rx - ox, ly = ry - oy;
         if (!(lx < ROAD_H || lx > CHUNK_W - ROAD_H || ly < ROAD_H || ly > CHUNK_W - ROAD_H)) continue;
-        softStamp(g, rx, ry, (30 + rng() * 90) * 1.55, (22 + rng() * 60) * 1.55, [0, 0, 0], (18 + rng() * 30) * 1.4);
+        softStamp(g, rx, ry, (30 + rng() * 90) * 2.1, (22 + rng() * 60) * 2.1, [0, 0, 0], (18 + rng() * 30) * 0.62);
       }
       break;
     }
@@ -12361,10 +12397,10 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
       g.noStroke();
 
       // Standing water / rot patches — deepest in the ruts, where it collects.
-      for (let i = 0; i < 9; i++) {
+      for (let i = 0; i < 4; i++) {
         const rx = ox + rng() * CHUNK_W, ry = oy + rng() * CHUNK_W;
         if (Math.abs(rx - trackAt(ry)) < 100) continue;
-        softStamp(g, rx, ry, (50 + rng() * 130) * 1.55, (40 + rng() * 90) * 1.55, [30, 50, 40], (40 + rng() * 40) * 1.4);
+        softStamp(g, rx, ry, 240 + rng() * 320, 190 + rng() * 240, [30, 50, 40], 22 + rng() * 22);
       }
       for (let i = 0; i < 7; i++) {
         const yy = oy + rng() * CHUNK_W;
@@ -12379,14 +12415,14 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
 
     case "TUNDRA": {
       // Wind-packed snow drifts — long soft arcs
-      for (let i = 0; i < 40; i++) {
+      for (let i = 0; i < 10; i++) {
         const rx = ox + rng() * CHUNK_W, ry = oy + rng() * CHUNK_W;
-        softStamp(g, rx, ry, (130 + rng() * 260) * 1.55, (26 + rng() * 46) * 1.55, [255, 255, 255], (26 + rng() * 40) * 1.4);
+        softStamp(g, rx, ry, 420 + rng() * 520, 90 + rng() * 130, [255, 255, 255], 16 + rng() * 20);
       }
       // Exposed blue ice
-      for (let i = 0; i < 7; i++) {
+      for (let i = 0; i < 3; i++) {
         const rx = ox + rng() * CHUNK_W, ry = oy + rng() * CHUNK_W;
-        softStamp(g, rx, ry, (60 + rng() * 150) * 1.55, (45 + rng() * 100) * 1.55, [150, 190, 215], (60 + rng() * 55) * 1.4);
+        softStamp(g, rx, ry, 250 + rng() * 340, 190 + rng() * 250, [150, 190, 215], 34 + rng() * 30);
       }
       // Crevasse hairlines
       g.stroke(120, 155, 185, 90); g.strokeWeight(1.6); g.noFill();
@@ -12423,10 +12459,10 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
       }
       g.noStroke();
       // Spore bloom rings
-      for (let i = 0; i < 12; i++) {
+      for (let i = 0; i < 5; i++) {
         const rx = ox + rng() * CHUNK_W, ry = oy + rng() * CHUNK_W;
-        softStamp(g, rx, ry, (60 + rng() * 170) * 1.55, (55 + rng() * 150) * 1.55, [120, 60, 180], (26 + rng() * 40) * 1.4);
-        softStamp(g, rx, ry, (26 + rng() * 60) * 1.55, (24 + rng() * 55) * 1.55, [p.mark[0], p.mark[1], p.mark[2]], (16) * 1.4);
+        softStamp(g, rx, ry, 260 + rng() * 380, 230 + rng() * 330, [120, 60, 180], 15 + rng() * 20);
+        softStamp(g, rx, ry, 90 + rng() * 150, 80 + rng() * 130, [p.mark[0], p.mark[1], p.mark[2]], 11);
       }
       break;
     }
@@ -13610,7 +13646,14 @@ class WeatherSystem {
 
     // Fog banks are huge translucent ellipses, so they are fill-rate bound —
     // a few large ones read better and cost far less than many small ones.
-    const counts = { ACID_RAIN: 220, DUST: 150, FOG: 8, SNOW: 200, SPORES: 90, SHIMMER: 54 };
+    // Fog: many smaller banks rather than a handful of enormous ones. Eight
+    // banks 560-1080 units across could not survive any wrap margin wide enough
+    // to hide their own teleport, and at that size you see the individual
+    // blob rather than a fog layer. Twenty-four banks at roughly half the
+    // diameter cover the view more evenly, layer into real depth, and come out
+    // cheaper: fill scales with the square of the radius, so 24 x 320 is less
+    // ink than 8 x 810.
+    const counts = { ACID_RAIN: 220, DUST: 150, FOG: 24, SNOW: 200, SPORES: 90, SHIMMER: 54 };
     const n = kind ? (counts[kind] || 120) : 0;
     this.parts.length = 0;
     for (let i = 0; i < n; i++) this.parts.push(this.spawn(true));
@@ -13643,12 +13686,16 @@ class WeatherSystem {
     // Slow-varying wind so gusts feel weathered rather than random
     this.gust = noise(frameCount * 0.004, 77.7) * 2 - 1;
 
-    // Wrap margin has to clear the particle's own radius, or a bank teleports
-    // from one side of the view to the other while it is still covering half
-    // the screen. Fog banks are up to ~1080 units across and were wrapping on
-    // a 100-unit margin: whole walls of fog snapped sideways mid-frame, which
-    // is one of the flickers you can see while standing still.
-    const M = this.kind === "FOG" ? 1300 : (this.kind === "SHIMMER" ? 220 : 100);
+    // Wrap margin has to clear the particle's own radius, or it teleports
+    // across the view while still covering part of it.
+    //
+    // This was set to 1300 for fog, which was wrong in a way that mattered: the
+    // pool is a fixed count, so widening the wrap box four times over spread
+    // the same eight banks across four times the area and almost none of them
+    // were on screen any more. That is why the fog disappeared. The real fix is
+    // smaller banks -- see setKind() and drawWorld() -- which need a margin
+    // barely larger than the old one and read as more layered fog, not less.
+    const M = this.kind === "FOG" ? 360 : (this.kind === "SHIMMER" ? 130 : 100);
     const L = viewLeft - M, R = viewRight + M;
     const T = viewTop - M,  B = viewBottom + M;
     const w = R - L, h = B - T;
@@ -13791,9 +13838,9 @@ class WeatherSystem {
         // ramp, so volume is bought with size rather than count -- eleven big
         // banks read deeper than twenty-six small ones and cost less.
         for (const p of this.parts) {
-          const r = 560 + p.s * 520;
+          const r = 330 + p.s * 300;
           const drift = Math.sin(frameCount * 0.004 + p.seed) * 34;
-          const dens = 22 + p.tier * 11 + p.s * 24;
+          const dens = 18 + p.tier * 9 + p.s * 20;
           softBlob(p.x + drift, p.y, r, r * 0.46, 172, 192, 168, dens);
         }
         break;
