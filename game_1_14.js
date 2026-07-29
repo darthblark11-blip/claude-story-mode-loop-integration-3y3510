@@ -628,6 +628,7 @@ function getCityZone(bX, bY) {
 function legacyGenerateMap() {
   buildings = [];
   parkingCars = [];
+  sealedSector = null;              // only Stick City is walled in
   
   if (currentLevel === 0) {
       buildings.push({ x: 0, y: -350, w: 1000, h: 100, isWall: true }); 
@@ -709,6 +710,36 @@ function legacyGenerateMap() {
         buildings.push({ x: 600, y: 5400, w: 9600, h: 800, isGovFortress: true, details: [], hp: 3000, maxHp: 3000, hitFlash: 0 });
         buildings.push({ x: 400, y: 4900, w: 150, h: 40, isWall: true });
         buildings.push({ x: 800, y: 4900, w: 150, h: 40, isWall: true });
+
+        // The curtain wall between the two Great Gates.
+        //
+        // Both gates run 9600 wide centred on x = 600, so they cover
+        // x -4200..5400 and stop dead at those ends -- the city was open on
+        // its east and west flanks and you could simply walk around either
+        // gate. These two runs close it: they sit immediately outside the gate
+        // ends and span the full distance from the north gate's outer face
+        // (y -4600) to the south gate's outer face (y 5800), so the four
+        // corners meet with no seam and the sector is sealed. North and south
+        // gates are now the only ways through.
+        //
+        // isGiantBarrier is NM-0's own wall art -- panelled slab, segment
+        // joints, and hazard beacons that the renderer already aims at
+        // whichever face points back into the city. It carries no hp, so the
+        // wall stops bullets and sparks but can never be breached; the gates
+        // remain the only destructible way out.
+        const WALL_T = 500;                       // thickness, east-west
+        const WALL_Y = 600, WALL_H = 10400;       // y -4600 .. 5800
+        buildings.push({ x: -4200 - WALL_T / 2, y: WALL_Y, w: WALL_T, h: WALL_H,
+                         isGiantBarrier: true, details: [] });
+        buildings.push({ x:  5400 + WALL_T / 2, y: WALL_Y, w: WALL_T, h: WALL_H,
+                         isGiantBarrier: true, details: [] });
+
+        // The walkable interior, published for the spawners. Without it the
+        // biome spawn ring -- which only rejects points that land inside a
+        // solid -- would happily drop an enemy on the far side of the curtain
+        // wall whenever the player fought near it, stranding it outside a
+        // sector it cannot re-enter and leaving "area cleared" unreachable.
+        sealedSector = { x0: -4200, x1: 5400, y0: -3800, y1: 5000 };
     }
 
     for (let bX = startBx; bX <= endBx; bX++) {
@@ -1037,12 +1068,35 @@ function drawBuildings() {
     
     // Giant Side Barriers
     if (b.isGiantBarrier) {
-        fill(70, 75, 80); stroke(30); strokeWeight(8); rect(b.x - b.w/2, b.y - b.h/2, b.w, b.h);
-        fill(50, 55, 60); noStroke(); for(let py = b.y - b.h/2 + 200; py < b.y + b.h/2; py += 400) rect(b.x - b.w/2, py, b.w, 100);
-        fill(255, 0, 0, 150 + sin(frameCount * 0.1)*100);
-        for(let py = b.y - b.h/2 + 250; py < b.y + b.h/2; py += 400) {
-            let lx = b.x < 0 ? b.x + b.w/2 - 20 : b.x - b.w/2 + 20;
-            ellipse(lx, py, 30, 30); fill(255, 100, 100); ellipse(lx, py, 10, 10); fill(255, 0, 0, 150 + sin(frameCount * 0.1)*100); 
+        // The curtain wall runs 10400 units. Stepping the segment and beacon
+        // loops over its whole length would paint twenty-six of each every
+        // frame when at most three are ever on screen, so both loops are
+        // clamped to the visible span. The slab itself is one rect and the
+        // rasteriser clips it for free.
+        const top = b.y - b.h / 2, bot = b.y + b.h / 2;
+        fill(70, 75, 80); stroke(30); strokeWeight(8);
+        rect(b.x - b.w / 2, top, b.w, b.h);
+        noStroke();
+
+        const y0 = Math.max(top, viewTop - 420), y1 = Math.min(bot, viewBottom + 420);
+        if (y1 > y0) {
+            // Segment joints, snapped to the wall's own 400-unit pitch so they
+            // stay put as the camera moves.
+            const first = top + 200 + Math.floor((y0 - (top + 200)) / 400) * 400;
+            fill(50, 55, 60);
+            for (let py = first; py < y1; py += 400) {
+                if (py + 100 < y0) continue;
+                rect(b.x - b.w / 2, py, b.w, 100);
+            }
+            // Hazard beacons on the face that looks back into the city.
+            const lx = b.x < 0 ? b.x + b.w / 2 - 20 : b.x - b.w / 2 + 20;
+            const glow = 150 + sin(frameCount * 0.1) * 100;
+            const firstL = top + 250 + Math.floor((y0 - (top + 250)) / 400) * 400;
+            for (let py = firstL; py < y1; py += 400) {
+                if (py + 30 < y0) continue;
+                fill(255, 0, 0, glow); ellipse(lx, py, 30, 30);
+                fill(255, 100, 100);  ellipse(lx, py, 10, 10);
+            }
         }
         continue;
     }
@@ -1843,7 +1897,7 @@ function drawParkingCars() {
 
 function windowResized() { resizeCanvas(windowWidth, windowHeight); leftStick.base = { x: 80, y: height - 160 }; rightStick.base = { x: width - 80, y: height - 110 }; }
 function nextLevel() { startAtLevel(currentLevel + 1); }
-function restartGame() { startAtLevel(1); }
+function restartGame() { seedWorldClock(); startAtLevel(1); }
 function emit(x, y, c, col, typ, vx = 0, vy = 0) { for (let i = 0; i < c; i++) { particles.push(new Particle(x, y, col, typ, vx, vy)); } }
 let activeBuildings = [];
 let activeParkingCars = [];
@@ -2253,8 +2307,10 @@ viewBottom = camY + height / zoom + shakePad;
 
   updateActiveWorld();
   manageChunkMemory();
-  updateProductionMeters();
+  // The clock advances before anything reads it, so the sun and the directive
+  // meters both see the same delta on the same frame.
   updateWorldClock();
+  updateProductionMeters();
   if (BIOME_ACTIVE) biomeBackground();
   else if (currentLevel === 1) background(45, 110, 45);
   else if (currentLevel === 2) background(20, 25, 40);
@@ -3584,6 +3640,10 @@ function beginSelectedRun() {
     // second run in the same page session would otherwise inherit the first
     // run's breached gates and settled towns.
     resetStoryProgress();
+    // One roll of the clock for the whole run. startAtLevel() deliberately
+    // never touches worldTimeMs, so from here the time of day carries from
+    // sector to sector on its own.
+    seedWorldClock();
 
     if (isStoryMode && pendingDebugStory) {
         // Debug jump: skip the intro crawl and the basement, land directly in
@@ -3853,8 +3913,8 @@ function legacyGetSafeSpawn(away) {
     // 2. Uniformly pick a spot anywhere on the entire map
     rx = random(-bndX, bndX);
     ry = random(-bndY, bndY);
-    
-    let hit = false;
+
+    let hit = !insideSector(rx, ry);
     
     // 3. Keep enemies from spawning directly on the player's head
     if (away && player && player.hp > 0 && dist(rx, ry, player.x, player.y) < 500) hit = true;
@@ -10501,8 +10561,19 @@ function updateProductionMeters() {
         window.archBarrierReady = false;
     }
     if (currentLevel < 1 || isDead || isWin || isPaused || inTownCutscene || inWorldBuildingMenu) return;
-    
-    if (frameCount % 60 === 0) {
+
+    // Accrue against the world clock, not the frame counter.
+    //
+    // This used to tick on `frameCount % 60`, which is only "once a second" if
+    // the game is holding 60 fps -- at 30 it paid out half as fast, so how
+    // quickly a settlement developed depended on the player's phone. It now
+    // shares the same millisecond delta the sun runs on, so a second of
+    // production is a second of production everywhere, and the two systems can
+    // never disagree about how much time has passed.
+    window.__meterAcc = (window.__meterAcc || 0) + worldClockDtMs;
+    if (window.__meterAcc >= 1000) {
+        const secs = Math.min(5, Math.floor(window.__meterAcc / 1000));
+        window.__meterAcc -= secs * 1000;
         // Force them to be numbers so the math never breaks
         let pF = Number(popFarming) || 0;
         let pM = Number(popMilitary) || 0;
@@ -10516,7 +10587,8 @@ function updateProductionMeters() {
         let sRate = (pS * (1 + Math.min(5, Math.floor(pS / 10)) * 0.1)) * 0.001;
         let aRate = (pA * (1 + Math.min(5, Math.floor(pA / 10)) * 0.1)) * 0.001;
 
-        window.farmXP += fRate; window.milXP += mRate; window.sciXP += sRate; window.archXP += aRate;
+        window.farmXP += fRate * secs; window.milXP += mRate * secs;
+        window.sciXP  += sRate * secs; window.archXP += aRate * secs;
         checkLevelUps();
     }
 }
@@ -12845,6 +12917,18 @@ let chunkMgr = null;
 //  casts along the same vector, which is what makes a top-down scene read as
 //  a coherent space rather than a collection of sprites.
 // ###########################################################################
+// Bounds of a sector that is fully enclosed by geometry, or null. Read by the
+// spawners so nothing is ever placed on the wrong side of a wall it cannot get
+// back through.
+let sealedSector = null;
+
+function insideSector(x, y, pad) {
+  if (!sealedSector) return true;
+  const m = pad === undefined ? 80 : pad;
+  return x > sealedSector.x0 + m && x < sealedSector.x1 - m &&
+         y > sealedSector.y0 + m && y < sealedSector.y1 - m;
+}
+
 const LIGHT_DX = 0.58;
 const LIGHT_DY = 0.81;
 
@@ -12983,6 +13067,18 @@ function drawBiomeShadows() {
     } else if (b.isWaterTower) {
       sh(76);
       ellipse(b.x + LIGHT_DX * 26 * SL, b.y + LIGHT_DY * 26 * SL + 20, 70, 34);
+    } else if (b.isGiantBarrier) {
+      // A 10400-unit slab: shadow only the stretch the camera can see, or the
+      // generic branch below builds a hull polygon spanning the whole wall and
+      // fills it every frame for the sake of the few hundred units on screen.
+      const top = Math.max(b.y - b.h / 2, viewTop - 200);
+      const bot = Math.min(b.y + b.h / 2, viewBottom + 200);
+      if (bot > top) {
+        const rise = 30, sl = 22 * SL;
+        sh(64);
+        rect(b.x - b.w / 2 + LIGHT_DX * (rise + sl),
+             top + LIGHT_DY * (rise + sl), b.w, bot - top);
+      }
     } else {
       // Buildings. The old pass drew a full-size copy of the footprint offset
       // down-right: a rectangle the same size as the building, detached from
@@ -14067,8 +14163,38 @@ const DAY_MS      = 48 * 60 * 1000;      // real milliseconds per in-game day
 const SUNRISE_H   = 6;                   // in-game hour the sun crosses up
 const DAY_SPAN_H  = 12;                  // hours of daylight (06:00 -> 18:00)
 
-let worldTimeMs   = DAY_MS * (8 / 24);   // start the game at 08:00, mid-morning
+let worldTimeMs   = DAY_MS * (8 / 24);   // replaced by seedWorldClock() on run start
 let clockLastMs   = null;
+
+// Milliseconds of world time that passed on the last tick. This is the single
+// clock the whole game runs on: the sun reads it, and so do the directive
+// meters (see updateProductionMeters). Zero while paused or in a menu, so
+// nothing accrues in either place while the world is stopped.
+let worldClockDtMs = 0;
+
+// Where the day opens.
+//
+// Every run used to start at 08:00 on the dot, in every sector, so the light
+// was the same every time you played. This picks an hour once per run and then
+// leaves it alone -- the clock runs forward from there and is never reset by
+// entering a level, so walking out of Stick City at dusk puts you in the next
+// sector at dusk. It rides the save the same way the directive XP does.
+//
+// Weighted rather than flat: most runs open in working daylight, the rest at
+// dawn, at dusk, or into the night. A flat 0-24 roll would drop a quarter of
+// all runs into pitch dark before the player has a weapon worth carrying.
+function seedWorldClock() {
+  const r = Math.random();
+  let h;
+  if (r < 0.62)      h = 7.0  + Math.random() * 9.5;    // 07:00 - 16:30, ordinary daylight
+  else if (r < 0.80) h = 16.5 + Math.random() * 3.0;    // 16:30 - 19:30, afternoon into dusk
+  else if (r < 0.92) h = 4.8  + Math.random() * 2.2;    // 04:48 - 07:00, dawn
+  else               h = (20.0 + Math.random() * 8.0) % 24;   // night watch
+  worldTimeMs = DAY_MS * (h / 24);
+  clockLastMs = null;                 // do not bill the seeding to the clock
+  lastWeatherRollHour = -1;           // let the new hour roll its own sky
+  window.worldClockSeeded = true;
+}
 let isRaining     = false;
 let lastWeatherRollHour = -1;
 
@@ -14177,8 +14303,10 @@ function updateWorldClock() {
   clockLastMs = now;
   // A backgrounded tab or a breakpoint must not fast-forward the day.
   if (!(dt > 0) || dt > 1000) dt = 16;
+  worldClockDtMs = 0;
   if (isPaused || !started || inWorldBuildingMenu || inOverworldView || inTravelMenu) return;
 
+  worldClockDtMs = dt;
   worldTimeMs = (worldTimeMs + dt) % DAY_MS;
 
   // One weather roll per in-game hour — 24 chances a day, which is what makes
@@ -14590,6 +14718,7 @@ function getSafeSpawn(away) {
     const r = minR + Math.random() * (maxR - minR);
     const rx = cx2 + Math.cos(a) * r;
     const ry = cy2 + Math.sin(a) * r;
+    if (!insideSector(rx, ry)) continue;
 
     let hit = false;
     for (const b of buildings) {
@@ -14605,6 +14734,14 @@ function getSafeSpawn(away) {
       }
     }
     if (!hit) return { x: rx, y: ry };
+  }
+  // Last resort: step back toward the middle of the sector rather than blindly
+  // outward, which near a wall is the one direction that cannot work.
+  if (sealedSector) {
+    const mx = (sealedSector.x0 + sealedSector.x1) / 2;
+    const my = (sealedSector.y0 + sealedSector.y1) / 2;
+    const a2 = Math.atan2(my - cy2, mx - cx2);
+    return { x: cx2 + Math.cos(a2) * 700, y: cy2 + Math.sin(a2) * 700 };
   }
   return { x: cx2 + 700, y: cy2 + 700 };
 }
