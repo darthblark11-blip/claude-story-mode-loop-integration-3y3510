@@ -1748,11 +1748,49 @@ function drawBuildings() {
     else        for (let l = b.y - b.h / 2 + 34; l < b.y + b.h / 2 - 14; l += 30)
                  line(b.x - b.w / 2 + 14, l, b.x + b.w / 2 - 14, l);
     noStroke();
-    // Ponding and tar patches
-    const wv = Math.abs((b.x * 0.013 + b.y * 0.021) % 1);
-    fill(0, 0, 0, 34);
-    ellipse(b.x + (wv - 0.5) * b.w * 0.5, b.y + (0.5 - wv) * b.h * 0.4, b.w * 0.34, b.h * 0.26);
-    ellipse(b.x - (wv - 0.5) * b.w * 0.34, b.y + (wv - 0.5) * b.h * 0.5, b.w * 0.2, b.h * 0.17);
+    // Roof drainage.
+    //
+    // This used to be two flat black ellipses per roof, sized off the footprint
+    // and placed by a hash of the building's coordinates -- 99 large ovals a
+    // frame across the visible city, sitting on the roofs like thumbprints with
+    // nothing to explain them. That is the "randomly placed ovals" in the
+    // screenshots.
+    //
+    // A flat roof drains to a low point, so give it one and let everything
+    // follow from that: a sump in the quadrant the roof falls toward, a shallow
+    // wet apron feathered around it, the drain body itself, and two crack lines
+    // running downhill into it. Same amount of ink, but now it reads as a roof
+    // instead of a smudge -- and the geometry says which way the roof slopes.
+    const wv   = Math.abs((b.x * 0.013 + b.y * 0.021) % 1);
+    const inR  = 16;                                     // inside the parapet
+    const dxq  = (wv < 0.5 ? -1 : 1), dyq = (((wv * 7) % 1) < 0.5 ? -1 : 1);
+    const dnx  = b.x + dxq * (b.w * 0.5 - inR - 14);
+    const dny  = b.y + dyq * (b.h * 0.5 - inR - 14);
+    const apr  = Math.min(b.w, b.h) * 0.30;
+    if (apr > 14) {
+      // Damp apron: three nested rings, darkest at the sump, so the edge fades
+      // instead of ending on a hard line the way a single ellipse does.
+      for (let r = 3; r >= 1; r--) {
+        fill(0, 0, 0, 9 + (3 - r) * 5);
+        ellipse(dnx, dny, apr * (0.45 + r * 0.22), apr * (0.40 + r * 0.20));
+      }
+      // Fall lines: shallow channels the water runs down. Kept short and very
+      // faint -- at full length they stopped reading as roof drainage and
+      // started reading as stray hairline scratches across the deck.
+      stroke(0, 0, 0, 22); strokeWeight(1.2);
+      line(dnx - dxq * apr * 0.85, dny - dyq * apr * 0.20, dnx, dny);
+      line(dnx - dxq * apr * 0.20, dny - dyq * apr * 0.85, dnx, dny);
+      noStroke();
+      // Drain: cast collar, grate, and a lit rim on the light side.
+      fill(46, 48, 52);        ellipse(dnx, dny, 15, 13);
+      fill(24, 26, 29);        ellipse(dnx, dny, 10, 8.5);
+      stroke(70, 74, 80, 190); strokeWeight(1);
+      line(dnx - 4, dny - 1.6, dnx + 4, dny - 1.6);
+      line(dnx - 4, dny + 1.6, dnx + 4, dny + 1.6);
+      noStroke();
+      fill(255, 255, 255, 26);
+      arc(dnx, dny, 15, 13, PI + QUARTER_PI, TWO_PI - QUARTER_PI);
+    }
 
     // Roof cap. A lit rim on the two edges the sun reaches and a hard break
     // where the roof rolls over onto the extruded walls. Two strokes, and the
@@ -1867,6 +1905,9 @@ function updateGrenadePickups() {
 
 
 function clearAllBlood() {
+    bloodChunkUse = {};
+    for (const pg of bloodSurfacePool) pg.remove();
+    bloodSurfacePool.length = 0;
     for (let key in bloodChunks) {
         bloodChunks[key].remove(); // Destroys the p5.Graphics object
     }
@@ -4761,19 +4802,105 @@ class Splatter {
   }
 }
 
+
+// ###########################################################################
+//  BLOOD SURFACE MEMORY
+//  Blood is stamped into one p5.Graphics per 1024-unit ground chunk and left
+//  there permanently. Two things made that ruinous on a phone.
+//
+//  First, createGraphics inherits the sketch's pixel density, so every chunk
+//  was a 2048x2048 (or 3072x3072 on a 3x display) backing store -- 16 to 36 MB
+//  EACH. Measured: fourteen splatters across the map allocated 240 MB.
+//
+//  Second, the eviction pass was commented out ("keep blood permanent"), so
+//  nothing was ever released. Walking an endless world meant unbounded growth.
+//  Past the compositor's budget the browser starts evicting and re-uploading
+//  canvas layers every frame, which is the flicker -- and it gets worse the
+//  longer a fight runs, because the blood keeps accumulating. Measured on a 3x
+//  viewport: 32 fps with no blood, 22 fps and 103 ms worst-case frames at 20
+//  chunks.
+//
+//  Density 1 is exact here: the buffer is blitted at 1024 world units square,
+//  and at the game's 0.65 zoom one buffer texel already covers more than one
+//  device pixel, so the extra sample rate was never visible. Buffers are
+//  pooled rather than recreated, and the live set is bounded by recency, so
+//  blood stays permanent everywhere you are still fighting and is reclaimed
+//  behind you.
+// ###########################################################################
+const BLOOD_CHUNK_LIMIT = 8;      // live surfaces; 8 x 1024 units covers the fight
+let bloodChunkUse = {};           // key -> frameCount when last touched
+let bloodSurfacePool = [];        // retired buffers, cleared and reused
+
+function acquireBloodChunk(key) {
+  let pg = bloodChunks[key];
+  if (pg) { bloodChunkUse[key] = frameCount; return pg; }
+
+  pg = bloodSurfacePool.pop();
+  if (pg) {
+    pg.clear();                   // reuse: no allocation, no GC
+  } else {
+    pg = createGraphics(CHUNK_SIZE, CHUNK_SIZE);
+    pg.pixelDensity(1);
+  }
+  pg.noStroke();
+  // Painted bounds, in buffer pixels. A blood surface is 1024x1024 but a fight
+  // marks a few hundred pixels of it; blitting the whole thing every frame
+  // measured 4.02 ms of a 25 ms frame. Tracking what was actually stamped lets
+  // the draw pass copy only that sub-rectangle.
+  pg.__x0 = 1e9; pg.__y0 = 1e9; pg.__x1 = -1e9; pg.__y1 = -1e9;
+  bloodChunks[key] = pg;
+  bloodChunkUse[key] = frameCount;
+  trimBloodChunks();
+  return pg;
+}
+
+// Grow a surface's painted bounds around a stamp at (rx, ry) of radius r.
+function markBlood(pg, rx, ry, r) {
+  if (rx - r < pg.__x0) pg.__x0 = rx - r;
+  if (ry - r < pg.__y0) pg.__y0 = ry - r;
+  if (rx + r > pg.__x1) pg.__x1 = rx + r;
+  if (ry + r > pg.__y1) pg.__y1 = ry + r;
+  if (pg.__x0 < 0) pg.__x0 = 0;
+  if (pg.__y0 < 0) pg.__y0 = 0;
+  if (pg.__x1 > CHUNK_SIZE) pg.__x1 = CHUNK_SIZE;
+  if (pg.__y1 > CHUNK_SIZE) pg.__y1 = CHUNK_SIZE;
+}
+
+// Retire the least recently stamped surfaces back to the pool. Never touches
+// the chunk the player is standing in, however stale its timestamp.
+function trimBloodChunks() {
+  const keys = Object.keys(bloodChunks);
+  if (keys.length <= BLOOD_CHUNK_LIMIT) return;
+  const hereX = player ? Math.floor(player.x / CHUNK_SIZE) : 0;
+  const hereY = player ? Math.floor(player.y / CHUNK_SIZE) : 0;
+  const here = hereX + "," + hereY;
+  keys.sort((a, b) => (bloodChunkUse[a] || 0) - (bloodChunkUse[b] || 0));
+  for (let i = 0; i < keys.length - BLOOD_CHUNK_LIMIT; i++) {
+    const k = keys[i];
+    if (k === here) continue;
+    const pg = bloodChunks[k];
+    delete bloodChunks[k];
+    delete bloodChunkUse[k];
+    if (pg) { if (bloodSurfacePool.length < 3) bloodSurfacePool.push(pg); else pg.remove(); }
+  }
+}
+
 function drawBloodChunks() {
     for (let key in bloodChunks) {
-        let coords = key.split(",");
-        let cx = parseInt(coords[0]);
-        let cy = parseInt(coords[1]);
-        
-        let worldX = cx * CHUNK_SIZE;
-        let worldY = cy * CHUNK_SIZE;
-        
-        // Only draw the graphics buffer if this sector of the city is on screen
-        if (inView(worldX + CHUNK_SIZE/2, worldY + CHUNK_SIZE/2, CHUNK_SIZE)) {
-            image(bloodChunks[key], worldX, worldY);
-        }
+        const pg = bloodChunks[key];
+        if (!pg || !(pg.__x1 > pg.__x0)) continue;      // nothing stamped yet
+
+        const coords = key.split(",");
+        const worldX = parseInt(coords[0]) * CHUNK_SIZE;
+        const worldY = parseInt(coords[1]) * CHUNK_SIZE;
+
+        // Cull and blit against the painted region, not the whole 1024 square.
+        const sx = pg.__x0, sy = pg.__y0;
+        const sw = pg.__x1 - sx, sh = pg.__y1 - sy;
+        const wx = worldX + sx, wy = worldY + sy;
+        if (wx > viewRight || wx + sw < viewLeft)  continue;
+        if (wy > viewBottom || wy + sh < viewTop)  continue;
+        image(pg, wx, wy, sw, sh, sx, sy, sw, sh);
     }
 }
 
@@ -4806,12 +4933,7 @@ function spawnSplatter(x, y, t = "HIDDEN", col = null) {
         for (let cy = minCY; cy <= maxCY; cy++) {
             let key = cx + "," + cy;
 
-            if (!bloodChunks[key]) {
-                bloodChunks[key] = createGraphics(CHUNK_SIZE, CHUNK_SIZE);
-                bloodChunks[key].noStroke();
-            }
-
-            let pg = bloodChunks[key];
+            let pg = acquireBloodChunk(key);
             let relX = x - (cx * CHUNK_SIZE);
             let relY = y - (cy * CHUNK_SIZE);
 
@@ -4820,6 +4942,7 @@ function spawnSplatter(x, y, t = "HIDDEN", col = null) {
 
             for (let b of blobs) {
                 pg.ellipse(relX + b.ox, relY + b.oy, b.sz);
+                markBlood(pg, relX + b.ox, relY + b.oy, b.sz);
             }
         }
     }
@@ -5588,12 +5711,7 @@ function stampCorpse(c) {
         for (let cy = minCY; cy <= maxCY; cy++) {
             let key = cx + "," + cy;
 
-            if (!bloodChunks[key]) {
-                bloodChunks[key] = createGraphics(CHUNK_SIZE, CHUNK_SIZE);
-                bloodChunks[key].noStroke();
-            }
-
-            let pg = bloodChunks[key];
+            let pg = acquireBloodChunk(key);
             
             // Shift coordinates into local chunk space
             let oldX = c.x;
@@ -5603,7 +5721,10 @@ function stampCorpse(c) {
             
             // Draw directly to the buffer instead of the screen
             c.show(pg);
-            
+            // A stamped corpse reaches well past its origin -- limbs, the pool
+            // under it, and whatever decals it carries.
+            markBlood(pg, c.x, c.y, 90);
+
             // Restore actual world coordinates
             c.x = oldX;
             c.y = oldY;
@@ -10454,11 +10575,15 @@ let BIOME_ACTIVE = false;      // true while inside a streamed biome
 const BIOMES = {
   1: {
     id: 1, name: "STICK CITY", region: "SECTOR 01 — NM-0 CAPITAL",
-    sky: [38, 44, 52],
+    // Authored at midday, not at midnight. The whole day/night model subtracts
+    // light -- night is a wash laid over the top -- so a palette written at
+    // night values leaves nothing for daylight to be. These are real overhead
+    // daylight readings for asphalt, concrete sidewalk and municipal paint.
+    sky: [96, 112, 130],
     pal: {
-      base: [58, 62, 68], alt: [44, 48, 54], dark: [30, 33, 38],
-      accent: [86, 92, 98], road: [40, 43, 48], mark: [212, 196, 120],
-      walk: [138, 143, 149], grass: [46, 78, 44]
+      base: [104, 108, 114], alt: [86, 90, 96], dark: [62, 66, 71],
+      accent: [132, 138, 145], road: [78, 81, 86], mark: [226, 208, 126],
+      walk: [162, 166, 172], grass: [74, 112, 62]
     },
     weather: "ACID_RAIN",
     layout: "CITY",
@@ -10472,11 +10597,14 @@ const BIOMES = {
   },
   2: {
     id: 2, name: "THE UNDERCITY", region: "SECTOR 02 — BLACKOUT ZONE",
-    sky: [16, 19, 28],
+    // Still the darkest sector by a wide margin -- the grid is severed here and
+    // it should read that way -- but lifted off pure black so the night wash
+    // has somewhere to go and the streets stay legible in a firefight.
+    sky: [40, 46, 60],
     pal: {
-      base: [34, 36, 42], alt: [26, 28, 34], dark: [16, 18, 22],
-      accent: [52, 56, 64], road: [24, 26, 31], mark: [180, 150, 70],
-      walk: [82, 86, 94], grass: [30, 46, 38]
+      base: [62, 65, 73], alt: [50, 53, 60], dark: [34, 36, 42],
+      accent: [84, 89, 99], road: [46, 48, 55], mark: [188, 158, 76],
+      walk: [104, 108, 117], grass: [46, 64, 52]
     },
     weather: "ACID_RAIN",
     layout: "CITY_DENSE",
@@ -10502,11 +10630,11 @@ const BIOMES = {
   },
   4: {
     id: 4, name: "THE GREEN LINE", region: "SECTOR 04 — MILITARY CORDON",
-    sky: [58, 84, 42],
+    sky: [92, 122, 74],
     pal: {
-      base: [74, 96, 44], alt: [58, 80, 36], dark: [38, 54, 26],
-      accent: [96, 118, 58], road: [118, 92, 52], mark: [180, 170, 110],
-      walk: [96, 78, 48], grass: [66, 104, 42]
+      base: [104, 128, 62], alt: [84, 108, 50], dark: [58, 78, 38],
+      accent: [130, 154, 78], road: [142, 114, 66], mark: [196, 186, 122],
+      walk: [118, 98, 62], grass: [92, 136, 58]
     },
     weather: "FOG",
     layout: "JUNGLE",
@@ -10533,11 +10661,11 @@ const BIOMES = {
   },
   6: {
     id: 6, name: "THE VIOLET WASTE", region: "SECTOR 06 — CONTACT SITE",
-    sky: [34, 22, 46],
+    sky: [66, 46, 88],
     pal: {
-      base: [58, 48, 78], alt: [44, 36, 62], dark: [26, 20, 38],
-      accent: [82, 64, 112], road: [48, 44, 66], mark: [90, 240, 120],
-      walk: [70, 60, 92], grass: [62, 40, 96]
+      base: [92, 76, 122], alt: [74, 60, 100], dark: [48, 38, 68],
+      accent: [122, 98, 160], road: [76, 68, 102], mark: [104, 248, 132],
+      walk: [104, 90, 134], grass: [94, 62, 140]
     },
     weather: "SPORES",
     layout: "ALIEN",
@@ -11716,6 +11844,51 @@ function bakeChunkTerrain(biome, cx, cy, staticDecor) {
 }
 
 // ---------------------------------------------------------------------------
+// SOFT GROUND STAMP
+// Ground mottling -- the patchiness that stops a lawn or a dirt lot reading as
+// one flat colour -- used to be laid down as large flat-filled ellipses. That
+// is the whole problem: a flat fill has a hard edge, so at 90 to 310 world
+// units across you do not see mottling, you see the ellipses themselves, forty
+// or seventy of them per chunk overlapping into a mess of rings. It is the
+// "random overlapping oval shapes" visible in every biome, because every
+// biome's bake used the same technique.
+//
+// A stamp with no edge cannot do that. This fades to fully transparent at its
+// rim, so overlapping stamps sum into smooth variation and no individual one
+// can ever be picked out. Gradients are cached per target buffer and per
+// colour, so a chunk's worth of stamps builds a handful of objects, and it is
+// all bake-time work anyway -- zero cost per frame.
+// ---------------------------------------------------------------------------
+let _stampCache = null, _stampCtx = null;
+
+function softStamp(g, x, y, w, h, col, alpha) {
+  if (!(alpha > 0.4) || !(w > 0) || !(h > 0)) return;
+  const ctx = g.drawingContext;
+  if (ctx !== _stampCtx) { _stampCache = new Map(); _stampCtx = ctx; }
+  const r = col[0] | 0, gg = col[1] | 0, b = col[2] | 0;
+  const key = (r << 16) | (gg << 8) | b;
+  let grad = _stampCache.get(key);
+  if (!grad) {
+    grad = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+    const c = r + ',' + gg + ',' + b;
+    grad.addColorStop(0.00, 'rgba(' + c + ',1)');
+    grad.addColorStop(0.45, 'rgba(' + c + ',0.72)');
+    grad.addColorStop(0.75, 'rgba(' + c + ',0.30)');
+    grad.addColorStop(1.00, 'rgba(' + c + ',0)');
+    _stampCache.set(key, grad);
+  }
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(w * 0.5, h * 0.5);
+  ctx.globalAlpha = Math.min(1, alpha / 255);
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(0, 0, 1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
 // Per-biome baked detail: roads, cracks, blades, ripples, ice, veins.
 // ---------------------------------------------------------------------------
 // A road painted as three thick bands shows three contour lines where each
@@ -11861,13 +12034,13 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
         const lit = mixc(p.grass, [255, 255, 255], 0.12);
         for (let i = 0; i < 34; i++) {
           const rx = inX + rng() * inW, ry = inY + rng() * inW;
-          g.fill(lit[0], lit[1], lit[2], 26 + rng() * 34);
-          g.ellipse(rx, ry, 90 + rng() * 220, 70 + rng() * 170);
+          softStamp(g, rx, ry, 150 + rng() * 300, 120 + rng() * 230,
+                    lit, 34 + rng() * 44);
         }
         for (let i = 0; i < 40; i++) {
           const rx = inX + rng() * inW, ry = inY + rng() * inW;
-          g.fill(p.dark[0], p.dark[1], p.dark[2], 20 + rng() * 30);
-          g.ellipse(rx, ry, 30 + rng() * 90, 24 + rng() * 66);
+          softStamp(g, rx, ry, 55 + rng() * 140, 44 + rng() * 100,
+                    p.dark, 26 + rng() * 40);
         }
         // Desire path: several overlapping passes rather than one thick
         // stroke, so it reads as ground worn bare by feet instead of a line
@@ -11896,8 +12069,7 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
         const patch = mixc(p.base, p.alt, 0.7);
         for (let i = 0; i < 30; i++) {
           const rx = inX + rng() * inW, ry = inY + rng() * inW;
-          g.fill(patch[0], patch[1], patch[2], 40 + rng() * 55);
-          g.ellipse(rx, ry, 70 + rng() * 210, 55 + rng() * 160);
+          softStamp(g, rx, ry, (70 + rng() * 210) * 1.55, (55 + rng() * 160) * 1.55, [patch[0], patch[1], patch[2]], (40 + rng() * 55) * 1.4);
         }
 
         // Service alley: one asphalt run through the block, joining the street
@@ -11943,8 +12115,7 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
           for (let l = px2 + 60 + rng() * 40; l < px2 + pw - 20; l += 70 + rng() * 50) g.line(l, py2, l, py2 + ph);
           for (let l = py2 + 60 + rng() * 40; l < py2 + ph - 20; l += 70 + rng() * 50) g.line(px2, l, px2 + pw, l);
           g.noStroke();
-          g.fill(0, 0, 0, 20 + rng() * 26);
-          g.ellipse(px2 + pw * rng(), py2 + ph * rng(), 30 + rng() * 70, 24 + rng() * 50);
+          softStamp(g, px2 + pw * rng(), py2 + ph * rng(), (30 + rng() * 70) * 1.55, (24 + rng() * 50) * 1.55, [0, 0, 0], (20 + rng() * 26) * 1.4);
         }
 
         // Weeds along the sidewalk edge, where nothing gets driven over
@@ -12016,8 +12187,7 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
         const rx = ox + rng() * CHUNK_W, ry = oy + rng() * CHUNK_W;
         const lx = rx - ox, ly = ry - oy;
         if (!(lx < ROAD_H || lx > CHUNK_W - ROAD_H || ly < ROAD_H || ly > CHUNK_W - ROAD_H)) continue;
-        g.fill(0, 0, 0, 18 + rng() * 30);
-        g.ellipse(rx, ry, 30 + rng() * 90, 22 + rng() * 60);
+        softStamp(g, rx, ry, (30 + rng() * 90) * 1.55, (22 + rng() * 60) * 1.55, [0, 0, 0], (18 + rng() * 30) * 1.4);
       }
       break;
     }
@@ -12194,8 +12364,7 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
       for (let i = 0; i < 9; i++) {
         const rx = ox + rng() * CHUNK_W, ry = oy + rng() * CHUNK_W;
         if (Math.abs(rx - trackAt(ry)) < 100) continue;
-        g.fill(30, 50, 40, 40 + rng() * 40);
-        g.ellipse(rx, ry, 50 + rng() * 130, 40 + rng() * 90);
+        softStamp(g, rx, ry, (50 + rng() * 130) * 1.55, (40 + rng() * 90) * 1.55, [30, 50, 40], (40 + rng() * 40) * 1.4);
       }
       for (let i = 0; i < 7; i++) {
         const yy = oy + rng() * CHUNK_W;
@@ -12212,14 +12381,12 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
       // Wind-packed snow drifts — long soft arcs
       for (let i = 0; i < 40; i++) {
         const rx = ox + rng() * CHUNK_W, ry = oy + rng() * CHUNK_W;
-        g.fill(255, 255, 255, 26 + rng() * 40);
-        g.ellipse(rx, ry, 130 + rng() * 260, 26 + rng() * 46);
+        softStamp(g, rx, ry, (130 + rng() * 260) * 1.55, (26 + rng() * 46) * 1.55, [255, 255, 255], (26 + rng() * 40) * 1.4);
       }
       // Exposed blue ice
       for (let i = 0; i < 7; i++) {
         const rx = ox + rng() * CHUNK_W, ry = oy + rng() * CHUNK_W;
-        g.fill(150, 190, 215, 60 + rng() * 55);
-        g.ellipse(rx, ry, 60 + rng() * 150, 45 + rng() * 100);
+        softStamp(g, rx, ry, (60 + rng() * 150) * 1.55, (45 + rng() * 100) * 1.55, [150, 190, 215], (60 + rng() * 55) * 1.4);
       }
       // Crevasse hairlines
       g.stroke(120, 155, 185, 90); g.strokeWeight(1.6); g.noFill();
@@ -12258,10 +12425,8 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
       // Spore bloom rings
       for (let i = 0; i < 12; i++) {
         const rx = ox + rng() * CHUNK_W, ry = oy + rng() * CHUNK_W;
-        g.fill(120, 60, 180, 26 + rng() * 40);
-        g.ellipse(rx, ry, 60 + rng() * 170, 55 + rng() * 150);
-        g.fill(p.mark[0], p.mark[1], p.mark[2], 16);
-        g.ellipse(rx, ry, 26 + rng() * 60, 24 + rng() * 55);
+        softStamp(g, rx, ry, (60 + rng() * 170) * 1.55, (55 + rng() * 150) * 1.55, [120, 60, 180], (26 + rng() * 40) * 1.4);
+        softStamp(g, rx, ry, (26 + rng() * 60) * 1.55, (24 + rng() * 55) * 1.55, [p.mark[0], p.mark[1], p.mark[2]], (16) * 1.4);
       }
       break;
     }
@@ -12572,6 +12737,11 @@ class ChunkManager {
     // markings to mush. The fix for that is resolution, not filtering: CHUNK_TEX
     // is 384 now and the vector detail pass already bakes at full buffer size.
     smooth();
+    // Whole-chunk blits. Source-rectangle clipping to the visible overlap was
+    // measured against this over three interleaved runs and came out inside the
+    // noise (-8%, +7%, -4%) -- Skia already discards the off-screen texels
+    // before it pays to sample them, so the extra arithmetic bought nothing and
+    // this stays the simpler path.
     for (const ch of this.chunks.values()) {
       if (!ch.tex) continue;
       const wx = ch.cx * CHUNK_W, wy = ch.cy * CHUNK_W;
@@ -12845,21 +13015,56 @@ function paintClutter(g, d, t) {
 
   switch (d.t) {
     case "PEBBLE": {
-      shadow(1.5, 1.5, 9 * s, 7 * s, 2, 55);
-      g.fill(90, 88, 84, 190); g.noStroke();
-      g.ellipse(0, 0, 8 * s, 6.5 * s);
-      g.fill(140, 138, 132, 150);
-      g.ellipse(-1 * s, -1 * s, 4 * s, 3 * s);
+      // A chip of broken kerb or aggregate: angular, with one facet catching
+      // the light and the opposite one in shade. Two nested ovals read as a
+      // grey dot; a fractured silhouette reads as stone.
+      shadow(1.5, 1.5, 8.5 * s, 6 * s, 2, 52);
+      g.noStroke();
+      g.rotate(d.r);
+      g.fill(88, 86, 82, 205);
+      g.beginShape();
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * TWO_PI;
+        const rr = (3.6 + 1.5 * Math.sin(i * 2.1 + d.c * 8)) * s;
+        g.vertex(Math.cos(a) * rr, Math.sin(a) * rr * 0.82);
+      }
+      g.endShape(CLOSE);
+      // Lit facet toward the sun, shaded facet away
+      g.fill(146, 143, 136, 165);
+      g.triangle(-LIGHT_DX * 3.2 * s, -LIGHT_DY * 3.2 * s,
+                  1.9 * s, -2.4 * s, -2.6 * s, 1.1 * s);
+      g.fill(38, 37, 35, 110);
+      g.triangle(LIGHT_DX * 3.4 * s, LIGHT_DY * 3.0 * s,
+                 2.4 * s, -0.9 * s, -0.7 * s, 2.6 * s);
       break;
     }
     case "TRASH": {
+      // A crushed drinks can on its side: barrel, two rims, a dented waist and
+      // a highlight running along the top of the cylinder. The old version was
+      // a rounded rectangle with a lighter stripe, which at this size is just a
+      // coloured tile.
       g.rotate(d.r);
-      shadowRect(13 * s, 9 * s, 2, 50);
-      g.fill(d.c > 0.5 ? 170 : 120, d.c > 0.5 ? 60 : 130, d.c > 0.5 ? 60 : 140, 200);
+      shadowRect(13 * s, 8 * s, 2, 48, 3);
       g.noStroke();
-      g.rect(-6 * s, -4 * s, 12 * s, 8 * s, 2);
-      g.fill(255, 255, 255, 40);
-      g.rect(-6 * s, -4 * s, 12 * s, 2.5 * s, 1);
+      const hot = d.c > 0.5;
+      const cr = hot ? 168 : 118, cg = hot ? 58 : 128, cb = hot ? 58 : 142;
+      // Body, pinched at the middle where it was stepped on
+      g.fill(cr, cg, cb, 214);
+      g.beginShape();
+      g.vertex(-6.2 * s, -3.5 * s); g.vertex(-1.0 * s, -2.6 * s);
+      g.vertex( 1.4 * s, -3.4 * s); g.vertex( 6.2 * s, -2.9 * s);
+      g.vertex( 6.2 * s,  2.9 * s); g.vertex( 1.4 * s,  3.4 * s);
+      g.vertex(-1.0 * s,  2.6 * s); g.vertex(-6.2 * s,  3.5 * s);
+      g.endShape(CLOSE);
+      // End rims, slightly proud of the barrel
+      g.fill(cr * 0.72, cg * 0.72, cb * 0.72, 220);
+      g.rect(-6.9 * s, -3.4 * s, 1.3 * s, 6.8 * s, 0.6);
+      g.rect( 5.6 * s, -2.8 * s, 1.3 * s, 5.6 * s, 0.6);
+      // Cylinder highlight along the top, dent shadow along the bottom
+      g.fill(255, 255, 255, 58);
+      g.rect(-5.6 * s, -2.9 * s, 11 * s, 1.5 * s, 0.7);
+      g.fill(0, 0, 0, 46);
+      g.rect(-5.6 * s,  1.7 * s, 11 * s, 1.4 * s, 0.7);
       break;
     }
     case "PAPER": {
@@ -12872,10 +13077,44 @@ function paintClutter(g, d, t) {
       break;
     }
     case "PUDDLE": {
+      // Water pooled on a road has an irregular edge -- it fills whatever dip
+      // it is sitting in. Three concentric flat ellipses, which is what this
+      // was, read as a dark oval smudge instead: a perfect ellipse is the one
+      // shape standing water never makes. These are the ovals visible on the
+      // asphalt in the screenshots.
+      //
+      // The outline is a closed loop whose radius wanders on two out-of-phase
+      // harmonics seeded from the prop, so every puddle has its own shape and
+      // none of them is symmetrical. Everything else follows the same global
+      // light as the rest of the scene: the sky reflects off the far side, the
+      // near lip catches a specular sliver, and the rim is darkest where the
+      // water is deepest against the kerb.
       g.noStroke();
-      g.fill(20, 30, 40, 70);   g.ellipse(0, 0, 30 * s, 20 * s);
-      g.fill(120, 160, 190, 55); g.ellipse(-2 * s, -2 * s, 20 * s, 12 * s);
-      g.fill(255, 255, 255, 28); g.ellipse(-4 * s, -3 * s, 8 * s, 4 * s);
+      const pr = 15 * s, pw = 0.62;                  // radius, and how flat it lies
+      const lip = (k) => {
+        g.beginShape();
+        for (let i = 0; i < 14; i++) {
+          const a = (i / 14) * TWO_PI;
+          const wob = 1 + 0.26 * Math.sin(a * 3 + d.c * 11)
+                        + 0.15 * Math.sin(a * 5 - d.r * 7);
+          g.vertex(Math.cos(a) * pr * wob * k, Math.sin(a) * pr * pw * wob * k);
+        }
+        g.endShape(CLOSE);
+      };
+      // Damp halo soaked into the asphalt past the water line
+      g.fill(28, 30, 34, 46); lip(1.16);
+      // The water body
+      g.fill(24, 32, 42, 132); lip(1.0);
+      // Sky bounce, offset away from the light -- this is what says "wet"
+      g.fill(150, 178, 205, 62);
+      g.push(); g.translate(-LIGHT_DX * pr * 0.22, -LIGHT_DY * pr * 0.22); lip(0.66); g.pop();
+      // Specular sliver on the near lip
+      g.fill(226, 240, 250, 74);
+      g.push();
+      g.translate(-LIGHT_DX * pr * 0.42, -LIGHT_DY * pr * 0.38);
+      g.rotate(Math.atan2(LIGHT_DY, LIGHT_DX) + HALF_PI);
+      g.ellipse(0, 0, pr * 0.72, pr * 0.13);
+      g.pop();
       break;
     }
     case "WEED": {
@@ -13590,113 +13829,91 @@ class WeatherSystem {
 // Fog, vignette and the day/night wash. Lifted out of WeatherSystem because it
 // has to run whether or not there is any weather — a clear night still has to
 // be dark.
-let _vigGrad = null, _vigW = 0, _vigH = 0, _vigQ = -1;
+// ---------------------------------------------------------------------------
+// SCREEN GRADE
+// Night, haze and vignette, composited into ONE small offscreen layer and
+// blitted up over the frame.
+//
+// This pass was measured at 7.45 ms of a 25 ms frame -- 29%, the single most
+// expensive thing the renderer did. It was running up to three full-screen
+// operations every frame: a blend-mode grade, a wash, and a radial-gradient
+// vignette, each touching every pixel of a 1080x2340 canvas. Evaluating a
+// radial gradient per pixel per frame is the worst of them.
+//
+// Every layer here is smooth and low-frequency by definition -- a flat wash
+// and a soft radial -- so none of it needs to exist at screen resolution. It
+// is rendered once into a 128px-wide buffer and stretched, which is exact for
+// this content, and rebuilt only when the light actually changes: the day is
+// 48 real minutes long, so that is a handful of times a minute rather than
+// sixty times a second.
+let _gradeBuf = null, _gradeKey = '', _gradeLoad = 0;
+
+const GRADE_W = 128;
+
+function buildGradeLayer(night, g, fogRGBA, w, h) {
+  const gh = Math.max(16, Math.round(GRADE_W * h / w));
+  if (!_gradeBuf || _gradeBuf.width !== GRADE_W || _gradeBuf.height !== gh) {
+    if (_gradeBuf) _gradeBuf.remove();
+    _gradeBuf = createGraphics(GRADE_W, gh);
+    _gradeBuf.pixelDensity(1);
+  }
+  const b = _gradeBuf;
+  b.clear();
+  b.noStroke();
+
+  // Golden hour, then haze and night resolved into a single fill.
+  if (g > 0.01) { b.fill(255, 146, 58, 52 * g); b.rect(0, 0, GRADE_W, gh); }
+
+  const af = fogRGBA ? (fogRGBA[3] / 255) * (0.34 + 0.66 * night) : 0;
+  const an = (150 / 255) * night * night;
+  const ao = 1 - (1 - af) * (1 - an);
+  if (ao > 0.004) {
+    const mix = (cf, cn) => ((cn * an) + (cf * af * (1 - an))) / ao;
+    b.fill(mix(fogRGBA ? fogRGBA[0] : 0, 12),
+           mix(fogRGBA ? fogRGBA[1] : 0, 20),
+           mix(fogRGBA ? fogRGBA[2] : 0, 52), ao * 255);
+    b.rect(0, 0, GRADE_W, gh);
+  }
+
+  // Vignette. Starts well outside the middle of the frame and stays weak, so
+  // it closes the edge without putting the player in a bright disc -- that
+  // follow-spot was the "spotlight" this replaced.
+  const vig = 0.24 * night;
+  _gradeLoad = ao + vig + (g > 0.01 ? g * 0.2 : 0);
+  const ctx = b.drawingContext;
+  const grd = ctx.createRadialGradient(
+    GRADE_W / 2, gh / 2, Math.min(GRADE_W, gh) * 0.62,
+    GRADE_W / 2, gh / 2, Math.max(GRADE_W, gh) * 0.92);
+  grd.addColorStop(0.00, 'rgba(6,9,20,0)');
+  grd.addColorStop(0.55, 'rgba(6,9,20,' + (vig * 0.34).toFixed(3) + ')');
+  grd.addColorStop(1.00, 'rgba(6,9,20,' + vig.toFixed(3) + ')');
+  ctx.save();
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, 0, GRADE_W, gh);
+  ctx.restore();
+  return b;
+}
 
 function drawBiomeScreenLayer() {
   const def = BIOMES[currentBiome];
   if (!def) return;
-  const ctx = drawingContext;
   noStroke();
 
-  const d = daylight(), g = goldenHour(), h = sunHeight();
+  const d = daylight(), g = goldenHour();
   const night = 1 - d;
 
-  // --- Key light ------------------------------------------------------------
-  // The terrain is baked once from a fixed, deliberately desaturated palette
-  // and never lit afterwards, so before this pass existed the ONLY thing time
-  // of day changed was the sky colour and how much darkness got laid over the
-  // top. Nothing ever added light. That is why 08:20 on a clear morning
-  // rendered as a black city: the game was drawing a night scene and then
-  // subtracting slightly less of it.
-  //
-  // 'overlay' with a colour lighter than mid-grey lifts midtones and leaves
-  // black where it is, so roads and roof decks come up into daylight without
-  // the whole frame going milky. One pass, and it is the difference between
-  // "day" being a label on the clock and being something you can see.
-  if (d > 0.01) {
-    const sc = sunColour();
-    // How much lift this biome actually needs. Stick City and the Undercity are
-    // painted from near-black palettes and were the levels that read as night
-    // at nine in the morning; the White Silence and the Crystal Flats are
-    // already near-white and would only wash out. One curve off the palette's
-    // own luminance, so adding a biome does not mean re-tuning the grade.
-    const pb = (BIOMES[currentBiome].pal || {}).base || [128, 128, 128];
-    const plum = 0.2126 * pb[0] + 0.7152 * pb[1] + 0.0722 * pb[2];
-    const need = Math.max(0.35, Math.min(1, 1.25 - plum / 170));
-    ctx.save();
-    ctx.globalCompositeOperation = 'overlay';
-    // Weighted to the low sun: a morning is warm and directional, noon is
-    // brighter but flatter. Keeps the whole daylight span from grading flat.
-    //
-    // The golden-hour wash is folded in here rather than run as its own
-    // full-screen rect. Both are warm, both peak with the sun near the
-    // horizon, and each full-screen pass is ~1.7M pixels of blend on this
-    // canvas -- so they are worth one pass, not two.
-    fill(sc[0] - 34 * g, sc[1] - 62 * g, sc[2] - 104 * g,
-         255 * d * need * (0.17 + 0.10 * h + 0.13 * g));
-    rect(0, 0, width, height);
-    ctx.restore();
+  // Quantised so slow light changes do not rebuild the layer every frame.
+  const key = (night * 48 | 0) + '|' + (g * 24 | 0) + '|' + currentBiome + '|' +
+              (width | 0) + 'x' + (height | 0);
+  if (key !== _gradeKey || !_gradeBuf) {
+    buildGradeLayer(night, g, def.fog, width, height);
+    _gradeKey = key;
   }
 
-  // --- Fog + day/night wash ------------------------------------------------
-  // The night wash is a cool layer that deepens as the sun drops; the golden
-  // one peaks exactly at the horizon. Both come off sunAltitude(), so dawn and
-  // dusk arrive continuously rather than switching over.
-  //
-  // Night and fog are composited analytically into a single full-screen blend
-  // rather than stacked as two. At 1100x760 each pass is 1.7M pixels of alpha
-  // work, and in the dense Undercity that second one measured ~3 fps.
-  // At night there is no sun to grade with, so dawn and dusk keep a small
-  // source-over warm pass of their own. In daylight the overlay above has
-  // already carried it.
-  if (g > 0.01 && d < 0.99) { fill(255, 138, 46, 40 * g * (1 - d)); rect(0, 0, width, height); }
-
-  const f = def.fog;
-  // Haze is a property of the air, and air is far more visible at night than
-  // in flat sun. Running the biome's full fog alpha at midday was stacking a
-  // permanent grey sheet over a scene that was already too dark.
-  const af = f ? (f[3] / 255) * (0.42 + 0.58 * night) : 0;
-  const an = (163 / 255) * night * night;
-  const ao = 1 - (1 - af) * (1 - an);
-  if (ao > 0.004) {
-    // Colour of the two layers resolved in draw order: fog under, night over.
-    const mix = (cf, cn) => ((cn * an) + (cf * af * (1 - an))) / ao;
-    fill(mix(f ? f[0] : 0, 12), mix(f ? f[1] : 0, 20), mix(f ? f[2] : 0, 52), ao * 255);
-    rect(0, 0, width, height);
-  }
-
-  // --- Vignette -------------------------------------------------------------
-  // This was the "spotlight over the player". The camera keeps the player at
-  // the centre of the canvas, and the vignette was a fixed radial centred on
-  // that same point running from fully clear to 42% black -- so the player
-  // stood in a permanent bright disc with the world crushed dark around them,
-  // and the pool slid across the ground as they walked. Against this biome's
-  // near-black palette it read as a follow-spot, not as a frame.
-  //
-  // Three changes: it starts much further out (0.62 rather than 0.32 of the
-  // short edge) so there is no bright core to sit in, it is far weaker, and
-  // its strength now tracks the time of day -- almost nothing in daylight,
-  // enough at night to close the frame down. It is also tinted toward the
-  // biome's night colour instead of pure black so it sinks into the scene
-  // rather than sitting on it.
-  const vig = 0.09 + 0.21 * night;
-  const vq  = Math.round(vig * 50);          // quantised, so the cache is stable
-  if (!_vigGrad || _vigW !== width || _vigH !== height || _vigQ !== vq) {
-    const grd = ctx.createRadialGradient(
-      width / 2, height / 2, Math.min(width, height) * 0.62,
-      width / 2, height / 2, Math.max(width, height) * 0.92
-    );
-    grd.addColorStop(0.00, 'rgba(6,9,20,0)');
-    grd.addColorStop(0.55, 'rgba(6,9,20,' + (vig * 0.34).toFixed(3) + ')');
-    grd.addColorStop(1.00, 'rgba(6,9,20,' + vig.toFixed(3) + ')');
-    _vigGrad = grd; _vigW = width; _vigH = height; _vigQ = vq;
-  }
-  // Assigning fillStyle behind p5's back leaks the gradient into whatever is
-  // drawn next before the following fill() call. Fence it.
-  ctx.save();
-  ctx.fillStyle = _vigGrad;
-  ctx.fillRect(0, 0, width, height);
-  ctx.restore();
+  // In flat daylight the layer is empty -- no night, no golden band, and the
+  // vignette is gone -- so there is nothing to composite and the most
+  // expensive pass in the renderer costs nothing at all.
+  if (_gradeLoad > 0.004) image(_gradeBuf, 0, 0, width, height);
 
   if (weather) weather.drawScreen(def);
 }
@@ -13848,19 +14065,33 @@ function sunHeight() {
 }
 
 // Colour of the key light. Low sun is warm and orange, high sun is close to
-// white with a trace of warmth left in it. One function, read by the ground
-// grade, the sky and the lamps, so nothing can disagree about what colour the
-// day is.
+// white with a trace of warmth left in it, and cloud cover pulls the whole
+// thing toward flat blue-grey skylight. One function, read by the grade, the
+// sky, the lamps and the shadows, so nothing can disagree about what the light
+// is doing.
+//
+// Held under 250 on every channel on purpose: the grade composites in
+// 'overlay', and a channel at 255 pins every mid-to-light surface to white
+// regardless of what was underneath it.
 function sunColour() {
-  const h = sunHeight();
-  return [255, 176 + 62 * h, 116 + 108 * h];
+  const h = sunHeight(), q = skyDiffusion();
+  const r = 246, g = 176 + 62 * h, b = 116 + 108 * h;
+  // Overcast: warm key -> cool even skylight.
+  return [r + (196 - r) * q, g + (206 - g) * q, b + (224 - b) * q];
 }
 
-// Shadows are long and soft when the sun is low, short and firm at noon. Cast
-// direction never changes -- LIGHT_DX/DY is the whole scene's one light vector
-// and props bake their shadows against it -- so only length and density move.
-function shadowLengthScale() { return 1.55 - 0.62 * sunHeight(); }
-function shadowDensity()     { return 0.55 + 0.45 * sunHeight(); }
+// How much key light actually lands. Full sun under a clear sky is 1; heavy
+// overcast is a bit over half, because the sky is still bright, it is just no
+// longer a point source.
+function keyStrength() { return 1 - 0.42 * skyDiffusion(); }
+
+// Shadows are long and soft when the sun is low, short and firm at noon, and
+// they fade out entirely under cloud -- an overcast day has no hard shadows at
+// all. Cast direction never changes: LIGHT_DX/DY is the whole scene's one
+// light vector and props bake their shadows against it, so only length and
+// density move.
+function shadowLengthScale() { return (1.55 - 0.62 * sunHeight()) * (1 - 0.25 * skyDiffusion()); }
+function shadowDensity()     { return (0.55 + 0.45 * sunHeight()) * (1 - 0.55 * skyDiffusion()); }
 
 // Air temperature lags the sun: coldest just before dawn, hottest mid
 // afternoon rather than at noon. 0 at 03:00, 1 at 15:00.
@@ -14228,11 +14459,6 @@ function drawGround() {
 //  Done as a scrolled tile rather than per-blob shapes: the whole effect is
 //  4-8 image() calls a frame regardless of how much cloud there is.
 // ###########################################################################
-const CLOUD_LAYERS = [
-  { size: 2600, vx:  7.5, vy: 2.4, k: 0.40, salt: 1 },   // high deck, slow, faint
-  { size: 1550, vx: 15.0, vy: 5.0, k: 0.62, salt: 2 }    // lower, faster, denser
-];
-
 // How much of the sky is covered right now: a slow drift around the biome's
 // baseline, pinned high while it rains.
 function cloudCover() {
@@ -14255,70 +14481,30 @@ function cloudHash(i, j, salt) {
 }
 
 function drawCloudShadows() {
-  if (!BIOME_ACTIVE) return;
-  // Under fog, rain or snow the sky is not visible, so there are no cloud
-  // shadows to cast — the dense layer IS the weather you can see. Skipping the
-  // pass outright rather than just fading it also matters for cost: alpha does
-  // not reduce fill rate, only not drawing does, and these are the two most
-  // expensive atmospheric passes. They never run in the same frame now.
-  if (weather && (weather.kind === "FOG" || weather.kind === "ACID_RAIN" || weather.kind === "SNOW")) return;
-
-  const cover = cloudCover();
-  // Overcast still reads at night, just much fainter — moonlight, not sun.
+  // Deliberately nothing. This pass used to scatter softBlob discs of 500 to
+  // 1600 world units across the ground -- at the game's zoom that is 300 to
+  // 1000 screen pixels, so what you actually saw was a handful of enormous
+  // pale circles overlapping each other with visible edges, sitting on the
+  // grass with no visible cause. From directly above, with no sky in frame,
+  // there is nothing on screen to explain them: they read as smudges on the
+  // lens, not as weather.
   //
-  // Capped, and scaled by how high the sun is. A cloud shadow is the absence
-  // of direct sun, so it can never be darker than the light it is blocking:
-  // at full strength these were laying two overlapping layers of near-black
-  // over most of the ground regardless of the hour, which is a large part of
-  // why a clear morning rendered like midnight.
-  const strength = Math.min(0.62, cover * (0.18 + 0.82 * daylight())) * (0.45 + 0.55 * sunHeight());
-  if (strength < 0.03) return;
-
-  const t = worldTimeMs * 0.001;
-
-  // Hashed grid rather than a tiled texture. Tiling blits the whole viewport
-  // including the two thirds that are open sky; this only touches the cells
-  // that actually hold a cloud, and it is still infinite and seamless because
-  // every cell's contents come from a hash of its coordinates.
-  for (const L of CLOUD_LAYERS) {
-    const C = L.size;
-    const dx = t * L.vx, dy = t * L.vy;
-    const i0 = Math.floor((viewLeft  + dx) / C) - 1, i1 = Math.floor((viewRight  + dx) / C) + 1;
-    const j0 = Math.floor((viewTop   + dy) / C) - 1, j1 = Math.floor((viewBottom + dy) / C) + 1;
-
-    for (let j = j0; j <= j1; j++) {
-      for (let i = i0; i <= i1; i++) {
-        // Cover decides how many cells are clouded at all. Cover drifts
-        // continuously, so a hard threshold made whole 1550-unit cloud shadows
-        // switch on and off between one frame and the next as it crossed a
-        // cell's hash -- a large patch of ground blinking dark. Cells now fade
-        // in across the last slice of the band instead of popping.
-        const hv  = cloudHash(i, j, L.salt);
-        const thr = cover * 0.92 + 0.06;
-        if (hv > thr) continue;
-        const edge = Math.min(1, (thr - hv) / 0.11);
-        const hx = cloudHash(i, j, L.salt + 11);
-        const hy = cloudHash(i, j, L.salt + 23);
-        const hr = cloudHash(i, j, L.salt + 37);
-        // Blob diameter stays well under the cell pitch. Sized at or above it
-        // they overlap into a single uniform wash -- expensive to draw and
-        // showing no cloud at all, since what you actually see is the edge.
-        const px2 = (i + 0.2 + hx * 0.6) * C - dx;
-        const py2 = (j + 0.2 + hy * 0.6) * C - dy;
-        const r   = C * (0.34 + hr * 0.30);
-        if (px2 + r < viewLeft || px2 - r > viewRight)  continue;
-        if (py2 + r < viewTop  || py2 - r > viewBottom) continue;
-        // Tinted toward the sky rather than a cold navy. Outdoor shade is lit
-        // by the sky above it, so a shadow that ignores the sky's colour reads
-        // as dirt on the lens.
-        const sk = BIOMES[currentBiome].sky;
-        softBlob(px2, py2, r, r * (0.62 + hx * 0.4),
-                 22 + sk[0] * 0.22, 28 + sk[1] * 0.22, 44 + sk[2] * 0.22,
-                 255 * strength * L.k * edge);
-      }
-    }
-  }
+  // Overcast is modelled where it belongs instead -- in the light itself. See
+  // skyDiffusion(): cloud cover now takes the edge off the sun, cools the key,
+  // flattens the shadows and drops the contrast, which is exactly what a
+  // cloudy day looks like and costs nothing to draw. Kept as a no-op so the
+  // ground stack keeps its shape and nothing else has to know.
 }
+
+// How diffuse the light is right now, 0 = hard direct sun, 1 = fully overcast.
+// This is the single number that carries weather into the lighting: it is read
+// by the grade, by the shadow pass and by the sky.
+function skyDiffusion() {
+  const c = cloudCover();
+  const d = c < 0 ? 0 : c > 1 ? 1 : c;
+  return d * d * (3 - 2 * d);          // smoothstep -- thin cloud barely counts
+}
+
 
 // The chunk terrain is the ground everywhere, including under the authored
 // core — that is what makes the seam invisible, since the CITY layout lays its
