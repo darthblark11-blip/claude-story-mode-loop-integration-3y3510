@@ -2220,28 +2220,12 @@ viewBottom = camY + height / zoom + shakePad;
   if (screenShake > 0) { translate(random(-screenShake, screenShake), random(-screenShake, screenShake)); screenShake *= 0.85; }
  
   // RENDER MASTER LAYER
-  drawGround(); 
-  drawBuildingPads(); 
-  for (let b of activeBuildings) {
-      if (!inView(b.x, b.y, Math.max(b.w || 0, b.h || 0) + 150)) continue; 
-      if (b.isPond) {
-          fill(60, 130, 200, 220); noStroke(); push(); translate(b.x, b.y); beginShape(); for (let a = 0; a < TWO_PI; a += 0.5) { let r = (b.w / 2) + sin(a * 3 + frameCount * 0.05) * 15; vertex(cos(a) * r, sin(a) * r); } endShape(CLOSE); pop();
-      } else if (b.isParkingLot) {
-          fill(70, 75, 80); noStroke(); rect(b.x - b.w/2, b.y - b.h/2, b.w, b.h, 10); strokeWeight(3); 
-          let spotW = 100, spotH = 65, aisleW = 80;
-          for (let px = b.x - b.w/2 + 40; px < b.x + b.w/2 - (spotW*2 + aisleW); px += (spotW*2 + aisleW)) {
-              stroke(255, 200, 0, 180); 
-              for (let py = b.y - b.h/2 + 30; py < b.y + b.h/2 - 30; py += spotH) { line(px, py, px + spotW, py); line(px + spotW + aisleW, py, px + spotW * 2 + aisleW, py); }
-          }
-      } else if (b.isCropField) {
-          fill(140, 110, 70); noStroke(); rect(b.x - b.w/2, b.y - b.h/2, b.w, b.h, 10);
-          stroke(80, 120, 40); strokeWeight(8);
-          for(let py = b.y - b.h/2 + 20; py < b.y + b.h/2; py += 30) line(b.x - b.w/2 + 10, py, b.x + b.w/2 - 10, py);
-      }
-  }
+  drawGround();
+  drawBuildingPads();
+  drawGroundLots();
   drawBloodChunks();
 
-  if (typeof updateSludges === 'function') updateSludges(); 
+  if (typeof updateSludges === 'function') updateSludges();
   if (typeof updateWaterPuddles === 'function') updateWaterPuddles(); 
   updateCorpses(); 
 
@@ -4427,6 +4411,58 @@ for (let b of buildings) {
 function inView(x, y, pad = 100) {
   return x >= viewLeft - pad && x <= viewRight + pad && y >= viewTop - pad && y <= viewBottom + pad;
 }
+// Ground-level lots: water, hardstanding and crop rows. These are surfaces,
+// not masses, so they belong under the shadow pass rather than in
+// drawBuildings() -- which is why that function skips them. Lifted out of
+// draw() into its own pass so the ground stack reads as a sequence of named
+// layers instead of an inline loop in the middle of the frame.
+function drawGroundLots() {
+  for (let b of activeBuildings) {
+      if (!inView(b.x, b.y, Math.max(b.w || 0, b.h || 0) + 150)) continue;
+      if (b.isPond) {
+          // Ponds are generated with independent w and h (220-340 by 180-300),
+          // but the outline was swept at radius w/2 on BOTH axes: the water you
+          // could see was a circle, while the water you could stand in is the
+          // rectangle. Sweeping each axis off its own half-extent puts the
+          // surface back on its own footprint.
+          push(); translate(b.x, b.y);
+          const rx0 = b.w / 2, ry0 = b.h / 2;
+          // Damp bank: a soft rim just outside the water line, so the pond sits
+          // in the ground instead of being a shape laid on top of it.
+          noStroke(); fill(24, 40, 34, 90);
+          beginShape();
+          for (let a = 0; a < TWO_PI; a += 0.5) {
+              const wob = sin(a * 3 + frameCount * 0.05) * 15;
+              vertex(cos(a) * (rx0 + wob + 9), sin(a) * (ry0 + wob + 9));
+          }
+          endShape(CLOSE);
+          fill(60, 130, 200, 220);
+          beginShape();
+          for (let a = 0; a < TWO_PI; a += 0.5) {
+              const wob = sin(a * 3 + frameCount * 0.05) * 15;
+              vertex(cos(a) * (rx0 + wob), sin(a) * (ry0 + wob));
+          }
+          endShape(CLOSE);
+          // Sky bounce on the side the light comes from — the one cue that
+          // reads as a water surface rather than a blue hole.
+          fill(150, 200, 235, 42);
+          ellipse(-LIGHT_DX * rx0 * 0.34, -LIGHT_DY * ry0 * 0.34, rx0 * 0.9, ry0 * 0.62);
+          pop();
+      } else if (b.isParkingLot) {
+          fill(70, 75, 80); noStroke(); rect(b.x - b.w/2, b.y - b.h/2, b.w, b.h, 10); strokeWeight(3); 
+          let spotW = 100, spotH = 65, aisleW = 80;
+          for (let px = b.x - b.w/2 + 40; px < b.x + b.w/2 - (spotW*2 + aisleW); px += (spotW*2 + aisleW)) {
+              stroke(255, 200, 0, 180); 
+              for (let py = b.y - b.h/2 + 30; py < b.y + b.h/2 - 30; py += spotH) { line(px, py, px + spotW, py); line(px + spotW + aisleW, py, px + spotW * 2 + aisleW, py); }
+          }
+      } else if (b.isCropField) {
+          fill(140, 110, 70); noStroke(); rect(b.x - b.w/2, b.y - b.h/2, b.w, b.h, 10);
+          stroke(80, 120, 40); strokeWeight(8);
+          for(let py = b.y - b.h/2 + 20; py < b.y + b.h/2; py += 30) line(b.x - b.w/2 + 10, py, b.x + b.w/2 - 10, py);
+      }
+  }
+}
+
 function drawBuildingPads() {
   for (let b of activeBuildings) { // Changed to activeBuildings
         if (!inView(b.x, b.y, Math.max(b.w || 0, b.h || 0) + 150)) continue;
@@ -10567,7 +10603,8 @@ function isStreamedLevel(l) { return hasAuthoredCore(l) || isBiomeLevel(l); }
 // re-published by the chunk manager every frame alongside the streamed chunks.
 let authoredSolids = [];
 let authoredCars   = [];
-let authoredCore   = null;   // chunk-snapped rect the streamer leaves alone
+let authoredCore   = null;   // chunk-snapped rect, used to centre the arrival
+let authoredChunks = null;   // the chunks the streamer actually leaves alone
 let authoredMask   = null;   // per-solid index, for pieces that overhang it
 
 // Bounding box of the authored map, snapped out to chunk edges so the handover
@@ -10616,11 +10653,77 @@ function buildAuthoredMask(solids) {
   return cells;
 }
 
+// Chunks the authored map genuinely occupies.
+//
+// This used to be a containment test against the core's bounding box, and a
+// bounding box is the wrong shape for the job. Stick City's Great Gates are a
+// 9600x800 slab lying across the top and bottom of the map. SPAN_LIMIT stops
+// their 9600 width stretching the core sideways -- but nothing stopped their
+// 800 thickness stretching it lengthwise, because that axis is well under the
+// limit. The core therefore reached a full chunk row past the city at each
+// end, and those rows held nothing but the gate: 3 authored solids across 7
+// chunks, against 23-59 in every real city row.
+//
+// Procedural generation is suppressed for every chunk in the core, so those
+// rows came out as ~12 chunks of dead ground -- baked streets and empty lots
+// with no buildings, no props and nothing to do -- wrapped around the city.
+// That is the seam between the hand-authored map and the streamed world.
+//
+// Occupancy answers the question the core was actually asking: not "is this
+// inside the extents of the authored map" but "does the authored map put
+// anything here".
+function buildAuthoredChunkSet(solids) {
+  const SPAN_LIMIT = 3000;
+  const occ = new Set();
+  let i0 = Infinity, i1 = -Infinity, j0 = Infinity, j1 = -Infinity;
+
+  for (const b of solids) {
+    const w = b.w || 0, h = b.h || 0;
+    // An oversized slab describes a boundary, not a district. The gates are
+    // carved out of the streamed world by hitsAuthored() instead, exactly as
+    // they already are in the columns they overhang either side of the city.
+    if (w >= SPAN_LIMIT || h >= SPAN_LIMIT) continue;
+    const ca = Math.floor((b.x - w / 2) / CHUNK_W), cb = Math.floor((b.x + w / 2) / CHUNK_W);
+    const ra = Math.floor((b.y - h / 2) / CHUNK_W), rb = Math.floor((b.y + h / 2) / CHUNK_W);
+    for (let j = ra; j <= rb; j++) {
+      for (let i = ca; i <= cb; i++) {
+        occ.add(i + "," + j);
+        if (i < i0) i0 = i;
+        if (i > i1) i1 = i;
+        if (j < j0) j0 = j;
+        if (j > j1) j1 = j;
+      }
+    }
+  }
+  if (!occ.size) return null;
+
+  // Fill interior holes only. A plaza or a park in the middle of the authored
+  // map has to stay authored or the streamer will drop buildings into it, but
+  // a chunk past the outermost authored building on both its row AND its
+  // column is somewhere the streamed city should simply resume.
+  const rowMin = new Map(), rowMax = new Map(), colMin = new Map(), colMax = new Map();
+  for (const k of occ) {
+    const c = k.indexOf(",");
+    const i = +k.slice(0, c), j = +k.slice(c + 1);
+    if (!rowMin.has(j) || i < rowMin.get(j)) rowMin.set(j, i);
+    if (!rowMax.has(j) || i > rowMax.get(j)) rowMax.set(j, i);
+    if (!colMin.has(i) || j < colMin.get(i)) colMin.set(i, j);
+    if (!colMax.has(i) || j > colMax.get(i)) colMax.set(i, j);
+  }
+  const out = new Set(occ);
+  for (let j = j0; j <= j1; j++) {
+    if (!rowMin.has(j)) continue;
+    for (let i = rowMin.get(j); i <= rowMax.get(j); i++) {
+      if (!colMin.has(i)) continue;
+      if (j >= colMin.get(i) && j <= colMax.get(i)) out.add(i + "," + j);
+    }
+  }
+  return out;
+}
+
 function chunkInAuthoredCore(cx, cy) {
-  if (!authoredCore) return false;
-  const x0 = cx * CHUNK_W, y0 = cy * CHUNK_W;
-  return x0 >= authoredCore.x0 && x0 + CHUNK_W <= authoredCore.x1 &&
-         y0 >= authoredCore.y0 && y0 + CHUNK_W <= authoredCore.y1;
+  if (!authoredChunks) return false;
+  return authoredChunks.has(cx + "," + cy);
 }
 
 function adoptLateAuthoredSolids() {
@@ -10639,7 +10742,10 @@ function adoptLateAuthoredSolids() {
     c.isAuthored = true;
     authoredCars.push(c);
   }
-  if (added) authoredMask = buildAuthoredMask(authoredSolids);
+  if (added) {
+    authoredMask   = buildAuthoredMask(authoredSolids);
+    authoredChunks = buildAuthoredChunkSet(authoredSolids);
+  }
 }
 
 function hitsAuthored(x, y, w, h, pad) {
@@ -12518,7 +12624,13 @@ function drawBiomeShadows() {
   noStroke();
   for (const b of activeBuildings) {
     if (b.isBiomeProp) continue;          // drawn with their own shadows later
-    if (b.isGrassLot && !b.isPond) continue;
+    // Water is a hole in the ground, not a mass standing on it. Ponds were
+    // falling through to the generic building branch and having a shadow the
+    // size of their bounding box painted straight over the surface — and
+    // because the pond itself is drawn back in the ground stack, that black
+    // box landed on top of the water rather than under it.
+    if (b.isPond || b.isWater) continue;
+    if (b.isGrassLot) continue;
     if (b.isCropField || b.isParkingLot) continue;
 
     const w = b.w || 0, h = b.h || 0;
@@ -13786,6 +13898,7 @@ function generateMap() {
   authoredSolids = [];
   authoredCars   = [];
   authoredCore   = null;
+  authoredChunks = null;
   authoredMask   = null;
 
   if (!isStreamedLevel(currentLevel)) {
@@ -13817,6 +13930,7 @@ function generateMap() {
     authoredSolids = buildings;
     authoredCars   = parkingCars;
     authoredCore   = computeAuthoredCore(authoredSolids);
+    authoredChunks = buildAuthoredChunkSet(authoredSolids);
     authoredMask   = buildAuthoredMask(authoredSolids);
   }
 
