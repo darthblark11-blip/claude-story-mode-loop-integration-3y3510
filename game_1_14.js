@@ -7936,10 +7936,31 @@ if (this.isPlayer) {
         ellipse(lArmSwing * 4, armLY, 16, 9);
         ellipse(rArmSwing * 4, armRY, 16, 9);
 
-        // Hands
+        // Hands. Empty on purpose: a townsman at ease has his gun in the
+        // holster drawn on his hip, not in his fist.
         fill(235, 180, 140);
         ellipse(lArmSwing * 14, armLY, 8, 8);
         ellipse(rArmSwing * 14, armRY, 8, 8);
+
+        // Close the two transforms this method opened.
+        //
+        // show() pushes twice -- once to translate to the character, once to
+        // rotate to the aim -- and the matching pops are the last two
+        // statements of the `else` arm below. This arm did not have them, so
+        // every neutral townsperson on screen leaked two entries onto the
+        // transform stack every single frame. The stack then accumulated the
+        // camera's scale and translate on top of itself, which is why the
+        // buildings drifted away and mirrored, why anything drawn after the
+        // leak vanished, and why the HUD -- drawn after a pop() that no longer
+        // balanced -- floated across the world. Shooting a civilian appeared to
+        // "fix" it because that clears isNeutral, which sends everyone down the
+        // else arm instead, where the pops exist.
+        //
+        // Pre-existing: the farmers have always done this. It only became
+        // visible when Dry Gulch put forty neutrals in a street full of
+        // buildings for the transform to visibly destroy.
+        pop();
+        pop();
     } else {
                 // ---> DEFINE SWORD STATE HERE <---
         let usingSword = (this.isPlayer && typeof swordPickedUp !== 'undefined' && swordPickedUp && window.swordEquipped !== false);
@@ -8145,6 +8166,30 @@ if (lArmSwing > frontThreshold || lArmSwing < backThreshold) {
                 else if (this.currentWeapon === WEAPONS.ASSAULT_RIFLE) { fill(40); rect(5, 4, 42, 4, 1); fill(139, 69, 19); rect(15, 3, 12, 6, 1); rect(0, 3, 8, 6, 1); } 
                 else if (this.currentWeapon === WEAPONS.SHOTGUN) { fill(30); rect(5, 4, 40, 5, 1); fill(15); rect(20, 3, 14, 7, 1); fill(50); rect(5, 3, 12, 7, 2); } 
                 else if (this.currentWeapon === WEAPONS.ROCKET_LAUNCHER) { fill(50, 70, 50); rect(5, 4, 45, 6, 2); fill(30); rect(20, 2, 10, 10, 1); } 
+                // Silver magnum: walnut grip, fluted cylinder, long bright
+                // barrel with a bead sight. Without a case here it fell through
+                // to the generic stub below and every cowboy held an anonymous
+                // black brick instead of the revolver he is actually firing.
+                else if (this.currentWeapon === WEAPONS.REVOLVER) {
+                    fill(86, 56, 34); rect(9, 8, 8, 9, 2);            // grip
+                    fill(188, 192, 200); rect(13, 4, 12, 7, 1);       // frame
+                    fill(152, 158, 166); ellipse(19, 7.5, 8, 8);      // cylinder
+                    stroke(120, 126, 134); strokeWeight(0.8);
+                    line(16, 7.5, 22, 7.5); noStroke();
+                    fill(214, 218, 226); rect(24, 5.5, 15, 4, 1);     // barrel
+                    fill(240, 244, 250); rect(24, 5.5, 15, 1.4);      // top rib
+                    fill(110, 116, 124); rect(37.5, 5, 2, 5);         // muzzle
+                    fill(230, 235, 242); ellipse(36, 4.6, 2, 2);      // bead sight
+                }
+                // Coach gun: sawn double-barrel over a walnut stock.
+                else if (this.currentWeapon === WEAPONS.COACH_GUN) {
+                    fill(84, 56, 32); rect(4, 5, 14, 8, 2);           // stock
+                    fill(120, 82, 46); rect(16, 4, 8, 9, 1);          // receiver
+                    fill(58, 60, 66); rect(23, 3.5, 22, 3.4, 1);      // upper barrel
+                    fill(48, 50, 56); rect(23, 7.4, 22, 3.4, 1);      // lower barrel
+                    fill(150, 120, 70); rect(21, 3.5, 2.5, 7.3);      // breech face
+                    fill(28, 30, 34); rect(44, 3.5, 1.6, 7.3);        // muzzles
+                }
                 else { fill(40); rect(15, 5, 16, 6, 2); } 
                 
                 if (this.currentWeapon === WEAPONS.DUAL_SMG && !isThrowing) {
