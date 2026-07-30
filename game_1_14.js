@@ -3629,6 +3629,10 @@ viewBottom = camY + height / zoom + shakePad;
       if (currentLevel !== 0 || (inUpstairsRoom && dist(player.x, player.y, 150, 0) >= 80 && dist(player.x, player.y, 0, -200) >= 120 && dist(player.x, player.y, 0, 250) >= 80)) drawUI();
       else if (!inUpstairsRoom && dist(player.x, player.y, -400, 0) >= 80) drawUI();
       
+      // --- MOUNT / DISMOUNT BUTTON ---
+      if (player.mounted) drawPromptBtn("DISMOUNT");
+      else if (mountableHorse()) drawPromptBtn("MOUNT");
+
       // --- NM-0 HQ ENTER BUTTON ---
       if (currentLevel === 1 && window.nm0AmbushClearedStatus) {
         let GOV_DIRECTIVE
@@ -7111,6 +7115,39 @@ this.skeletonTimer = 0;
       return this;
   }
 
+  // Take the saddle of a specific animal, absorbing it. The horse's identity --
+  // coat, mane, markings -- travels with the rider, so the animal you get back
+  // when you step down is the animal you got on.
+  mountHorse(h) {
+      if (!h || this.mounted) return false;
+      this.mounted   = true;
+      this.mountCoat = h.coatCol;
+      this.mountMane = h.maneCol;
+      this.mountSock = h.sock;
+      this.mountWalk = h.walkCycle || 0;
+      this.mountFacing = this.moveAngle !== undefined ? this.moveAngle : this.aimAngle;
+      const i = enemiesList.indexOf(h);
+      if (i > -1) enemiesList.splice(i, 1);
+      return true;
+  }
+
+  // Step down. The animal is handed back beside you, standing rather than
+  // bolting -- you got off it, nobody shot it out from under you.
+  dismount() {
+      if (!this.mounted) return null;
+      this.mounted = false;
+      const a = (this.mountFacing !== undefined ? this.mountFacing : this.aimAngle) + HALF_PI;
+      const h = new Character(this.x + cos(a) * 46, this.y + sin(a) * 46, false, "HORSE");
+      h.coatCol = this.mountCoat;
+      h.maneCol = this.mountMane;
+      h.sock    = this.mountSock;
+      h.aimAngle = h.moveAngle = this.mountFacing !== undefined ? this.mountFacing : this.aimAngle;
+      h.state = "IDLE";
+      h.timer = 200;
+      enemiesList.push(h);
+      return h;
+  }
+
   // Shot off the horse. The animal survives, and it bolts -- which is the point
   // of modelling it at all, because a posse that leaves loose horses behind is a
   // different thing from a posse that evaporates.
@@ -7151,9 +7188,18 @@ this.skeletonTimer = 0;
     // Livestock is not a citizen: shooting a cow or a horse does not turn the
     // town on you, it just scatters the stock.
     if (this.eType === "HORSE") { this.spook(200); }
-    if (this.isNeutral && this.eType !== "COW" && this.eType !== "HORSE") {
+    // A travelling band answers for its own and for nobody else's quarrel. This
+    // has to come before the town-wide cascade, and the cascade has to skip
+    // anyone riding with a band, or a shot fired in a town three thousand units
+    // away would turn a group of strangers on the far side of the desert.
+    if (this.bandGroup && this.isNeutral) {
+        turnBandGroup(this.bandGroup);
+        for (let e of enemiesList) if (e.eType === "HORSE" && dist(e.x, e.y, this.x, this.y) < 700) e.spook(140);
+    }
+    else if (this.isNeutral && this.eType !== "COW" && this.eType !== "HORSE") {
         for (let e of enemiesList) {
             if (e.eType === "HORSE") { e.spook(140); continue; }
+            if (e.bandGroup) continue;
             if (e.isNeutral && e.eType !== "COW") {
                 e.isNeutral = false;
                 e.isFriendly = false; // They are now hostile to the player
@@ -7666,7 +7712,8 @@ this.skeletonTimer = 0;
     }
 
     this.prevMeleeInputHeld = meleeInputHeld;
-    let speed = ninjaSuitUnlocked ? 6.6 : 6.0;
+    // Mounted, on the flat, a horse is most of twice a man's pace.
+    let speed = (ninjaSuitUnlocked ? 6.6 : 6.0) * (this.mounted ? 1.78 : 1);
 
     if (this.dashTimer > 0) { 
         this.dashTimer--; speed = 22; 
@@ -7708,6 +7755,20 @@ this.skeletonTimer = 0;
         
         let aDx = 0, aDy = 0; 
         if (abs(dx) > 0.05 || abs(dy) > 0.05) { if (!this.checkCol(this.x + dx, this.y)) { this.x += dx; aDx = dx; } if (!this.checkCol(this.x, this.y + dy)) { this.y += dy; aDy = dy; } if (aDx !== 0 || aDy !== 0) { this.isMoving = true; this.walkCycle += 0.25; this.moveAngle = atan2(aDy, aDx); this.lastMoveAngle = this.moveAngle; } else this.isMoving = false; } else this.isMoving = false; 
+    }
+
+    // Drive the gait, and turn the animal toward where it is actually going. A
+    // horse does not pivot on the spot because the man on it looked over his
+    // shoulder, so the facing tracks the MOVE angle and holds when he stops --
+    // aiming is the rider's business, not the horse's. This is the difference
+    // between riding and sliding a sprite around.
+    if (this.mounted) {
+        this.mountWalk = (this.mountWalk || 0) + (this.isMoving ? 0.34 : 0.02);
+        if (this.mountFacing === undefined) this.mountFacing = this.aimAngle;
+        if (this.isMoving) {
+            const d = (this.moveAngle - this.mountFacing + PI * 3) % TWO_PI - PI;
+            this.mountFacing += d * 0.18;
+        }
     }
 
     if (this.meleeTimer > 0) {
@@ -7924,6 +7985,21 @@ if (this.eType === "COW") {
         return;
     }
 
+    // A band riding through holds its line. It is neutral, so nothing in the
+    // sight-and-chase machinery applies to it, and it has no business patrolling
+    // a building it has never seen before.
+    if (this.isNeutral && this.state === "RIDE_BY") {
+        const a = this.rideAngle !== undefined ? this.rideAngle : this.aimAngle;
+        this.aimAngle = a;
+        const m = this.attemptMove(cos(a) * 3.4, sin(a) * 3.4);
+        // Blocked: ease around whatever it is rather than standing in the sand.
+        if (m.x === 0 && m.y === 0) this.rideAngle = a + random(-0.8, 0.8);
+        this.isMoving = (m.x !== 0 || m.y !== 0);
+        if (this.isMoving) { this.walkCycle += 0.12; this.moveAngle = atan2(m.y, m.x); }
+        this.armDrag = lerp(this.armDrag, this.isMoving ? 1 : 0, 0.15);
+        return;
+    }
+
     if (this.isNeutral) {
         if (this.state !== "PATROL") {
             this.state = "PATROL";
@@ -7980,7 +8056,13 @@ if (this.eType === "COW") {
     // riding in off the flats read as a threat rather than as a slow walk.
     const mountSpd = this.mounted ? 2.15 : 1;
     let spd = mountSpd * (this.eType === "ARMORED" ? 0.65 : (this.eType === "AERIAL" ? 1.25 : ((this.eType === "AERIAL_PISTOL" || this.eType === "SAUCER" || this.eType === "SAUCER_RED") ? 1.47 : (this.eType === "SNAIL" ? 0.5 : (this.eType === "BUG" || this.eType === "MOLOTOV" || this.eType === "ARMORED_STANDARD" || this.eType === "ALIEN_GATOR" || this.eType === "SNAIL_HYBRID" ? 1.0 : 1.0)))));
-    if (this.mounted) this.mountWalk = (this.mountWalk || 0) + (this.isMoving ? 0.3 : 0.02);
+    if (this.mounted) {
+        this.mountWalk = (this.mountWalk || 0) + (this.isMoving ? 0.3 : 0.02);
+        if (this.mountFacing === undefined) this.mountFacing = this.aimAngle;
+        const want = this.isMoving ? this.moveAngle : this.aimAngle;
+        const d = (want - this.mountFacing + PI * 3) % TWO_PI - PI;
+        this.mountFacing += d * 0.16;
+    }
     let aDx = 0, aDy = 0;
     
     if (this.eType === "AERIAL" || this.eType === "AERIAL_PISTOL" || this.eType === "SAUCER" || this.eType === "SAUCER_RED") { emit(this.x, this.y, 1, color(0, 200, 255), "THRUST", -cos(this.aimAngle) * 5, -sin(this.aimAngle) * 5); emit(this.x, this.y, 1, color(255, 100, 0), "THRUST", -cos(this.aimAngle) * 5, -sin(this.aimAngle) * 5); }
@@ -8647,7 +8729,7 @@ if (this.stunTimer > 0 && this.skeletonTimer <= 0) {
     // enemiesList -- and it means one horse can never be drawn twice.
     if (this.mounted) {
         push();
-        rotate(this.moveAngle !== undefined && this.isMoving ? this.moveAngle : this.aimAngle);
+        rotate(this.mountFacing !== undefined ? this.mountFacing : this.aimAngle);
         // Drawn up a quarter. A horse is bigger than the man on it and the rider
         // art is fixed, so this is where the size relationship gets set -- at
         // parity the rider covered the whole barrel and it read as a man wearing
@@ -9550,6 +9632,7 @@ function updateEntities() {
   checkAmbushCleared();
   checkFarmSwarmAlive();
   maintainHostiles();
+  cullDepartedBands();
 }
 
 // The wilderness half of the loop. spawnSingleEnemy() is otherwise only called
@@ -9563,42 +9646,111 @@ function maintainHostiles() {
   if (typeof TARGET_ENEMY_COUNT === 'undefined') return;
   let hostiles = 0;
   for (let i = 0; i < enemiesList.length; i++) if (!enemiesList[i].isFriendly) hostiles++;
-  maintainBanditPosse(hostiles);
+  if (currentLevel === 3) maintainBanditPosse(hostiles);
   if (hostiles >= TARGET_ENEMY_COUNT) return;
   spawnSingleEnemy();
 }
 
 // ---------------------------------------------------------------------------
 // BANDIT ENCOUNTERS
-// The frontier's overworld beat. Lone riders come out of the ordinary spawner;
-// this is the other thing that happens out there -- a posse comes over the rise
-// together, at speed, from one side. Rare enough to be an event, close enough
-// to be unavoidable, and always mounted, because the point of a posse is that
-// you cannot simply walk away from it.
-let banditPosseTimer = 0;
+// The frontier's overworld beat, and the one part of it that is not simply a
+// spawn table: a band of riders comes over the rise together, and most of the
+// time they are just going somewhere.
+//
+// Rolled once every ROLL frames of open country -- not in a town, not in the
+// authored sector -- and the roll either produces a band or it does not. Roughly
+// one roll in seven at eight seconds a roll works out to a band about every
+// minute of riding: often enough to be the texture of the biome, rare enough to
+// still be an event.
+//
+// Half of them mean it. The other half ride past on their own heading, neutral,
+// with no interest in you unless you give them one. Shooting into a passing band
+// turns THAT band and nobody else -- they have no stake in a town's quarrel three
+// thousand units away, and the town has none in theirs.
+const BANDIT_ROLL_FRAMES    = 480;   // one roll every eight seconds
+const BANDIT_ROLL_CHANCE    = 0.15;  // chance a roll produces a band
+const BANDIT_HOSTILE_CHANCE = 0.50;  // chance that band is coming for you
+const BANDIT_BAND_MIN = 3, BANDIT_BAND_MAX = 6;
+let banditRollTimer = 0;
+let banditGroupSeq  = 0;
+
+// Is there a populated settlement close enough that this counts as "in town"?
+function nearSettlement(x, y) {
+  const cx = Math.floor(x / CHUNK_W), cy = Math.floor(y / CHUNK_W);
+  for (let j = cy - 1; j <= cy + 1; j++) {
+    for (let i = cx - 1; i <= cx + 1; i++) {
+      const l = chunkPop.get(i + "," + j);
+      if (l && l.length) return true;
+    }
+  }
+  return false;
+}
+
 function maintainBanditPosse(hostiles) {
-  if (currentLevel !== 3 || !inBiomeOverworld()) { banditPosseTimer = 0; return; }
-  if (banditPosseTimer > 0) { banditPosseTimer--; return; }
+  if (currentLevel !== 3 || !inBiomeOverworld()) { banditRollTimer = 0; return; }
+  banditRollTimer += 45;                       // this runs on the 45-frame tick
+  if (banditRollTimer < BANDIT_ROLL_FRAMES) return;
+  banditRollTimer = 0;
+  if (nearSettlement(player.x, player.y)) return;
   if (hostiles > TARGET_ENEMY_COUNT * 0.6) return;
-  // ~35 to 70 seconds between encounters, counted in 45-frame ticks.
-  banditPosseTimer = floor(random(46, 94));
-  const n = floor(random(2, 5));
+  if (random() > BANDIT_ROLL_CHANCE) return;
+
+  const hostile = random() < BANDIT_HOSTILE_CHANCE;
+  const n = floor(random(BANDIT_BAND_MIN, BANDIT_BAND_MAX + 1));
+  const group = ++banditGroupSeq;
   const a = random(TWO_PI), r = 1500 + random(400);
   const ox = player.x + cos(a) * r, oy = player.y + sin(a) * r;
+  // A band rides abreast of its heading, in file, not as a cloud of dots.
+  const heading = hostile ? a + PI : a + PI + random(-0.9, 0.9);
   for (let i = 0; i < n; i++) {
-    const sx = ox + cos(a + HALF_PI) * (i - (n - 1) / 2) * 90;
-    const sy = oy + sin(a + HALF_PI) * (i - (n - 1) / 2) * 90;
+    const sx = ox + cos(a + HALF_PI) * (i - (n - 1) / 2) * 95;
+    const sy = oy + sin(a + HALF_PI) * (i - (n - 1) / 2) * 95;
     if (inAuthoredSector(sx, sy, 500)) continue;
     const b = new Character(sx, sy, false, "BANDIT");
     b.mountUp();
-    b.state = "CHASE";
-    b.loseSightTimer = 3500;
-    b.lastKnownX = player.x; b.lastKnownY = player.y;
+    b.bandGroup = group;
+    if (hostile) {
+      b.state = "CHASE";
+      b.loseSightTimer = 3500;
+      b.lastKnownX = player.x; b.lastKnownY = player.y;
+    } else {
+      // Passing through. Neutral means the player's bullets are the only thing
+      // that can change their minds, and isFriendly keeps them out of the
+      // hostile census so a band of travellers does not suppress the sector's
+      // actual threat level.
+      b.isNeutral = true; b.isFriendly = true;
+      b.rideAngle = heading + random(-0.08, 0.08);
+      b.state = "RIDE_BY";
+    }
     enemiesList.push(b);
   }
   // Anything with hooves in earshot leaves.
   for (const e of enemiesList) if (e.eType === "HORSE" && !e.rider) {
     if (dist(e.x, e.y, ox, oy) < 900) e.spook(150);
+  }
+}
+
+// Turn one band, and only that band.
+function turnBandGroup(g) {
+  if (!g) return;
+  for (const e of enemiesList) {
+    if (e.bandGroup !== g || !e.isNeutral) continue;
+    e.isNeutral = false;
+    e.isFriendly = false;
+    e.state = "CHASE";
+    e.loseSightTimer = 3500;
+    if (player) { e.lastKnownX = player.x; e.lastKnownY = player.y; }
+  }
+}
+
+// A band that rode past and kept going is gone. Without this every band the
+// player ever met would still be out there riding in a straight line forever.
+function cullDepartedBands() {
+  if (frameCount % 60 !== 0 || !player) return;
+  for (let i = enemiesList.length - 1; i >= 0; i--) {
+    const e = enemiesList[i];
+    if (e.state !== "RIDE_BY" || !e.isNeutral) continue;
+    if (dist(e.x, e.y, player.x, player.y) > 3200) enemiesList.splice(i, 1);
   }
 }
 
@@ -10970,6 +11122,9 @@ function touchStarted() {
       return false;
   }
 
+  // --- MOUNT / DISMOUNT ---
+  if (handleMountTap(mx, my)) return false;
+
   // --- NEW: LEVEL 1 ENTER NM-0 HQ ---
   if (currentLevel === 1 && window.nm0AmbushClearedStatus && !killcamMode && !inTownCutscene && !inPostAmbushCutscene) {
       let nGate = buildings.find(b => b.isGovFortress && b.y < 0);
@@ -11679,7 +11834,17 @@ function handleDesktop() {
       leftStick.dy = kDy / mag;
       window.isDesktop = true; 
   }
-  if (keyIsDown(69) && meleeUnlocked) meleeInputHeld = true; 
+  if (keyIsDown(69) && meleeUnlocked) meleeInputHeld = true;
+
+  // R to mount or step down. Edge-triggered: on a level trigger, holding the key
+  // toggles sixty times a second and leaves you on or off the horse at random.
+  const rDown = keyIsDown(82);
+  if (rDown && !window.__rideKeyWas) {
+      if (player.mounted) { player.dismount(); sfx.charge(); }
+      else { const h = mountableHorse(); if (h) { player.mountHorse(h); sfx.charge(); } }
+  }
+  window.__rideKeyWas = rDown;
+
 
   if (window.isDesktop) {
       let worldMouseX = (mouseX / zoom) + camX;
@@ -11760,6 +11925,41 @@ function drawSpeechBubble(x, y, txt) {
 }
 
 // --- NEW HELPER FUNCTIONS FOR CONTEXT PROMPTS ---
+// The nearest animal the player could get on: alive, standing near enough to
+// reach, and not currently running for its life.
+// Cached: this is asked once a frame from the UI path just to decide whether to
+// draw a button, and the answer cannot meaningfully change in a tenth of a
+// second. The scan itself walks every live entity, which is a hundred and sixty
+// of them in a populated sector.
+let _mountScanFrame = -99, _mountScanResult = null;
+function mountableHorse() {
+  if (!player || player.mounted || player.hp <= 0 || isDead || isWin || killcamMode) return null;
+  if (frameCount - _mountScanFrame < 6 && _mountScanResult !== null) {
+    const c = _mountScanResult;
+    // Re-validate the cached pick before handing it back -- it may have been
+    // shot, or bolted, since the scan.
+    if (c.hp > 0 && !c.dead && c.boltTimer <= 0 && dist(player.x, player.y, c.x, c.y) < 118) return c;
+  }
+  _mountScanFrame = frameCount;
+  let best = null, bd = 118;
+  for (const e of enemiesList) {
+    if (e.eType !== "HORSE" || e.hp <= 0 || e.dead) continue;
+    if (e.boltTimer > 0) continue;                    // catch it when it settles
+    const d = dist(player.x, player.y, e.x, e.y);
+    if (d < bd) { bd = d; best = e; }
+  }
+  _mountScanResult = best;
+  return best;
+}
+// One button for both halves of the transaction.
+function handleMountTap(mx, my) {
+  if (!player || !isClickingBtn(mx, my)) return false;
+  if (player.mounted) { player.dismount(); sfx.charge(); return true; }
+  const h = mountableHorse();
+  if (h) { player.mountHorse(h); sfx.charge(); return true; }
+  return false;
+}
+
 function drawPromptBtn(txt) {
     fill(255, 200, 0); stroke(200, 100, 0); strokeWeight(2);
     rect(width/2 - 70, height - 120, 140, 50, 8);
@@ -16886,6 +17086,8 @@ function generateMap() {
   // Residents belong to the world that is being torn down, and their chunk keys
   // mean nothing in the next one.
   resetPopulation();
+  // And you do not ride a horse from one sector into the next.
+  if (player && player.mounted) { player.mounted = false; player.mountFacing = undefined; }
 
   if (!isStreamedLevel(currentLevel)) {
     // Level 0's house and Level 8's HQ interior: closed rooms, no streaming.
