@@ -2861,11 +2861,27 @@ function draw() {
   }
 
   // TOWER DESTROYED WIN CONDITION TRIGGER
-  if ((currentLevel === 1 || currentLevel === 2) && isStoryMode && !window.towersDefeated){
+  // One shot. The old guard was `!towersDefeated`, and that flag is not set until
+  // an ambush is cleared or the sector is won -- on a sector whose objective IS
+  // the towers there is no ambush, so between the last tower falling and the win
+  // screen this re-armed the cinematic every time the previous one ended.
+  if ((currentLevel === 1 || currentLevel === 2) && isStoryMode &&
+      !window.towersDefeated && !sectorTowersAreDown(currentLevel)) {
       let totalTowers = buildings.filter(b => b.isTower).length;
       let activeTowers = buildings.filter(b => b.isTower && b.hp > 0).length;
       if (totalTowers > 0 && activeTowers === 0 && !isWin && !killcamMode) {
           killcamMode = true; killcamTarget = { x: player.x, y: player.y }; killcamTimer = 150;
+          // Everyone left alive in the sector changes sides here, not at the
+          // win screen. markSectorTowersDown() also closes the sector to new
+          // hostile spawns, so the ground you just liberated stays liberated
+          // instead of refilling behind you.
+          markSectorTowersDown(currentLevel);
+          const got = recruitSectorSurvivors();
+          if (got.total > 0) {
+              streakMsgText = "TOWERS DOWN — " + got.total + " CITIZEN" +
+                              (got.total === 1 ? "" : "S") + " FREED";
+              streakMsgTimer = 220;
+          }
       }
   }
 
@@ -4627,6 +4643,49 @@ function seedDebugStoryProgress(level) {
 // Stick City and the Undercity are authored maps that get rebuilt from scratch
 // on every entry, so "the towers are gone" has to be remembered per sector
 // rather than inferred. Kept on townsData so it rides along with the save.
+// Has this sector's transmission grid already come down?
+function sectorTowersAreDown(level) {
+  if (typeof townsData === 'undefined' || !townsData) return false;
+  const t = townsData[level === undefined ? currentLevel : level];
+  return !!(t && t.towersDown);
+}
+
+// The towers are the sector's leash. With them down, everyone still standing in
+// it who is a person rather than a machine stops being NM-0's and starts being
+// Stick City's -- which is the whole point of the savior route, and until now it
+// only happened for whoever was left alive at the moment an ambush was cleared.
+// A sector with no ambush in it -- the Undercity, whose objective is the towers
+// themselves -- never converted anybody.
+//
+// Armour does not defect. ARMORED and ARMORED_STANDARD are hardware; the pistol
+// regulars and the incendiary crews are conscripts.
+const RECRUITABLE = ["NORMAL", "FEMALE_PISTOL", "MOLOTOV"];
+function recruitSectorSurvivors() {
+  let n = 0, f = 0;
+  for (const e of enemiesList) {
+    if (!e || e.isFriendly || e.dead || e.hp <= 0) continue;
+    if (RECRUITABLE.indexOf(e.eType) === -1) continue;
+    e.isFriendly = true;
+    e.isNeutral  = false;
+    e.isRecruit  = true;
+    e.state      = "IDLE";
+    e.hp         = 300;
+    e.loseSightTimer = 0;
+    e.routeA = e.routeB = undefined;      // off the checkpoint beat, they work for you now
+    globalPopulation++;
+    n++;
+    if (String(e.eType).toUpperCase().indexOf("FEMALE") !== -1) f++;
+  }
+  // Detach them from whatever settlement roster owned them, or the population
+  // layer will hand them back to the world the next time that chunk goes out of
+  // range and the recruits will vanish.
+  for (const [k, list] of chunkPop) {
+    const keep = list.filter(e => !e.isRecruit);
+    if (keep.length !== list.length) chunkPop.set(k, keep);
+  }
+  return { total: n, female: f };
+}
+
 function markSectorTowersDown(level) {
     if (typeof townsData === 'undefined') window.townsData = {};
     if (!townsData[level]) townsData[level] = { established: false };
@@ -4878,11 +4937,13 @@ function triggerGateAmbush(fortressY, isNorthGate = false) {
 //  5 to 8 keep their existing tables until they are worked on.
 // ###########################################################################
 const OVERWORLD = {
-  // FEMALE_PISTOL is in both city tables on purpose: she is an NM-0 regular the
-  // story already fields alongside the yellow pistol men, and leaving her out
-  // would have the whitelist deleting half of Stick City's own garrison.
-  1: [["NORMAL", 44], ["FEMALE_PISTOL", 16], ["ARMORED_STANDARD", 24], ["MOLOTOV", 10], ["ARMORED", 6]],
-  2: [["NORMAL", 34], ["FEMALE_PISTOL", 16], ["ARMORED_STANDARD", 28], ["MOLOTOV", 12], ["ARMORED", 10]],
+  // One regular per sector. Stick City is the yellow pistol men; the Undercity
+  // is the women, and only the women -- no armour, no incendiaries, nothing but
+  // the sector's own people. That is deliberate: the Undercity's garrison is
+  // the population you are about to inherit, and a sector you are meant to
+  // liberate should not be salted with units that cannot defect.
+  1: [["NORMAL", 60], ["ARMORED_STANDARD", 26], ["MOLOTOV", 8], ["ARMORED", 6]],
+  2: [["FEMALE_PISTOL", 100]],
   3: [["BANDIT", 100]],
   4: [["NM0_GREY_FATIGUE", 68], ["ARMORED_STANDARD", 22], ["ARMORED", 10]]
 };
@@ -4946,7 +5007,9 @@ function nativeToOverworld(e) {
   const set = OVERWORLD_SET[currentLevel];
   if (!set) return true;
   if (e.isFriendly) return true;                  // civilians, allies, neutral garrisons
-  if (e.routeA || e.isMilitary || e.bandGroup) return true;
+  // isAmbush marks a scripted spawn placed at fixed map coordinates. The
+  // distance cull already refuses to touch them and neither does this.
+  if (e.isAmbush || e.routeA || e.isMilitary || e.bandGroup) return true;
   return set.has(e.eType);
 }
 
@@ -4979,6 +5042,8 @@ function spawnSingleEnemy() {
   // Do not spawn random hostiles if the town is liberated, ambush is active, or in specific story scenes!
  
   if (currentLevel === 0 || nm0AmbushActive || window.towersDefeated) return;
+  // Its grid is down and its garrison came over. Nothing new arrives.
+  if (isStoryMode && sectorTowersAreDown(currentLevel)) return;
   // Random wanderers belong in the outer region and nowhere else. A town is held
   // by its residents, an outpost by its garrison, an NM-0 facility by the story;
   // none of them want a stranger materialising in the middle of them. This used
@@ -14911,7 +14976,10 @@ function settlementRoster(biome, cx, cy, solids) {
       for (let i = 0; i < n; i++) {
         const pt = popPlace(rng, solids, ox - 260, ox + 260, oy - 260, oy + 260);
         if (!pt) continue;
-        out.push({ type: rng() > 0.7 ? "ARMORED_STANDARD" : "NORMAL",
+        // Drawn from the sector's own table rather than hard-coded, so a
+        // garrison can never be a different army from the one holding the road
+        // outside it.
+        out.push({ type: overworldPick(biome, rng()) || "NORMAL",
                    x: pt.x, y: pt.y,
                    route: route, home: { x: ox, y: oy } });
       }
