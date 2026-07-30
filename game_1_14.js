@@ -4878,11 +4878,22 @@ function triggerGateAmbush(fortressY, isNorthGate = false) {
 //  5 to 8 keep their existing tables until they are worked on.
 // ###########################################################################
 const OVERWORLD = {
-  1: [["NORMAL", 58], ["ARMORED_STANDARD", 26], ["MOLOTOV", 10], ["ARMORED", 6]],
-  2: [["NORMAL", 46], ["ARMORED_STANDARD", 30], ["MOLOTOV", 14], ["ARMORED", 10]],
+  // FEMALE_PISTOL is in both city tables on purpose: she is an NM-0 regular the
+  // story already fields alongside the yellow pistol men, and leaving her out
+  // would have the whitelist deleting half of Stick City's own garrison.
+  1: [["NORMAL", 44], ["FEMALE_PISTOL", 16], ["ARMORED_STANDARD", 24], ["MOLOTOV", 10], ["ARMORED", 6]],
+  2: [["NORMAL", 34], ["FEMALE_PISTOL", 16], ["ARMORED_STANDARD", 28], ["MOLOTOV", 12], ["ARMORED", 10]],
   3: [["BANDIT", 100]],
   4: [["NM0_GREY_FATIGUE", 68], ["ARMORED_STANDARD", 22], ["ARMORED", 10]]
 };
+// The set that is allowed to exist in each biome's outer region, precomputed.
+// A table is a whitelist, not a preference: anything not in it is not native to
+// the sector and has no business wandering it.
+const OVERWORLD_SET = (() => {
+  const o = {};
+  for (const k of Object.keys(OVERWORLD)) o[k] = new Set(OVERWORLD[k].map(e => e[0]));
+  return o;
+})();
 function overworldPick(level, r) {
   const t = OVERWORLD[level];
   if (!t) return null;
@@ -4892,27 +4903,88 @@ function overworldPick(level, r) {
   for (const e of t) { acc += e[1]; if (roll < acc) return e[0]; }
   return t[t.length - 1][0];
 }
-// True where the biome's own overworld table applies: streaming, out of any
-// authored sector, and not inside a scripted set piece.
+
+// The outer region: everything that is not a town, an outpost or an NM-0
+// facility. That is the line the sector's own garrison lives on the far side
+// of, and the only place random wanderers belong at all -- settlements are
+// held by their residents and the authored sectors are held by the story.
+let _outerFrame = -99, _outerX = 0, _outerY = 0, _outerVal = false;
+function inOuterRegion(x, y) {
+  // Memoised for the point it is asked about most -- the player's own position,
+  // several times a frame, and the settlement half of the test walks every
+  // resident in the world.
+  const memo = frameCount === _outerFrame &&
+               Math.abs(x - _outerX) < 40 && Math.abs(y - _outerY) < 40;
+  if (memo) return _outerVal;
+  const v = outerRegionUncached(x, y);
+  _outerFrame = frameCount; _outerX = x; _outerY = y; _outerVal = v;
+  return v;
+}
+function outerRegionUncached(x, y) {
+  if (inAuthoredSector(x, y, 900)) return false;              // NM-0 facilities, story arenas
+  if (typeof nearSettlement === 'function' && nearSettlement(x, y)) return false;  // towns
+  const cx = Math.floor(x / CHUNK_W), cy = Math.floor(y / CHUNK_W);
+  const lay = BIOME_ACTIVE && BIOMES[currentBiome] ? BIOMES[currentBiome].layout : null;
+  if (lay === "CITY" || lay === "CITY_DENSE") {              // outposts
+    for (let j = cy - 1; j <= cy + 1; j++)
+      for (let i = cx - 1; i <= cx + 1; i++)
+        if (cityIsCheckpoint(currentBiome, i, j)) return false;
+  }
+  return true;
+}
+
+// True where the biome's own overworld table applies.
 function inBiomeOverworld() {
-  if (!BIOME_ACTIVE || !OVERWORLD[currentLevel]) return false;
-  if (nm0AmbushActive || farmAmbushActive) return false;
-  if (!player) return false;
-  return !inAuthoredSector(player.x, player.y, 900);
+  if (!BIOME_ACTIVE || !OVERWORLD[currentLevel] || !player) return false;
+  if (nm0AmbushActive) return false;              // scripted arena, own composition
+  return inOuterRegion(player.x, player.y);
+}
+
+// Is this type native to the sector's outer region? Story and garrison units are
+// exempt -- they were placed on purpose and are not wanderers.
+function nativeToOverworld(e) {
+  const set = OVERWORLD_SET[currentLevel];
+  if (!set) return true;
+  if (e.isFriendly) return true;                  // civilians, allies, neutral garrisons
+  if (e.routeA || e.isMilitary || e.bandGroup) return true;
+  return set.has(e.eType);
+}
+
+// Anything hostile wandering the outer region that is not native to it gets
+// picked up and taken away. This is the backstop, and the reason it exists is
+// that a whitelist applied only at the spawn site is worth nothing against the
+// enemies a sector is ALREADY holding -- carried across a level change, left
+// over from a scripted fight, spawned before a rule existed. Bounded hard: only
+// off screen, only in the open country, only when nothing scripted is running,
+// and only a couple at a time.
+function sweepForeignHostiles() {
+  if (!doTick || !player || isDead || isWin || killcamMode) return;
+  if (frameCount % 30 !== 0) return;
+  if (!BIOME_ACTIVE || !OVERWORLD_SET[currentLevel]) return;
+  if (nm0AmbushActive || farmAmbushActive) return;
+  let removed = 0;
+  for (let i = enemiesList.length - 1; i >= 0 && removed < 3; i--) {
+    const e = enemiesList[i];
+    if (!e || e.isFriendly || e.dead) continue;
+    if (nativeToOverworld(e)) continue;
+    if (!inOuterRegion(e.x, e.y)) continue;
+    const dx = e.x - player.x, dy = e.y - player.y;
+    if (dx * dx + dy * dy < 1600 * 1600) continue;            // never in view
+    enemiesList.splice(i, 1);
+    removed++;
+  }
 }
 
 function spawnSingleEnemy() {
   // Do not spawn random hostiles if the town is liberated, ambush is active, or in specific story scenes!
  
   if (currentLevel === 0 || nm0AmbushActive || window.towersDefeated) return;
-  // The Anveda farm and Dry Gulch are a neutral scene while the story arc runs
-  // -- no random hostiles among the farmers. This used to gate the whole level,
-  // which is why walking out of the first town led to an empty world: the towns
-  // past it were unpopulated AND the country between them had nothing in it
-  // either. It is a proximity test now, so the sector stays peaceful and the
-  // open country beyond it is open country.
-  if (currentLevel === 3 && isStoryMode && !isBiomeLevel(3) &&
-      inAuthoredSector(player ? player.x : 0, player ? player.y : 0, 900)) return;
+  // Random wanderers belong in the outer region and nowhere else. A town is held
+  // by its residents, an outpost by its garrison, an NM-0 facility by the story;
+  // none of them want a stranger materialising in the middle of them. This used
+  // to be a level-3 story special case, which left every other sector spawning
+  // hostiles inside its own settlements.
+  if (player && OVERWORLD[currentLevel] && !nm0AmbushActive && !inOuterRegion(player.x, player.y)) return;
 
   let baseEnemyCount = 0;
   let armoredCount = 0, bugCount = 0, molotovCount = 0, saucerCount = 0;
@@ -5059,6 +5131,21 @@ if (bugCount < 10) {
       type = (currentLevel === 2 && isStoryMode) ? "FEMALE_PISTOL" : "NORMAL"; 
   }
   
+  // Last gate before anything is created. Every ladder above this line predates
+  // the biome tables, and one of them was still handing level 3 the yellow
+  // pistol regulars from Stick City and the jetpack troopers along with them.
+  // A whitelist checked at the point of creation cannot be routed around.
+  if (OVERWORLD_SET[currentLevel] && inOuterRegion(eS.x, eS.y) &&
+      !OVERWORLD_SET[currentLevel].has(type)) {
+      type = overworldPick(currentLevel, random());
+      if (type === "BANDIT") {
+          const b = new Character(eS.x, eS.y, false, "BANDIT");
+          if (random() > 0.35) b.mountUp();
+          enemiesList.push(b);
+          return;
+      }
+  }
+
   enemiesList.push(new Character(eS.x, eS.y, false, type));
 }
 
@@ -9633,6 +9720,7 @@ function updateEntities() {
   checkFarmSwarmAlive();
   maintainHostiles();
   cullDepartedBands();
+  sweepForeignHostiles();
 }
 
 // The wilderness half of the loop. spawnSingleEnemy() is otherwise only called
@@ -9674,13 +9762,24 @@ const BANDIT_BAND_MIN = 3, BANDIT_BAND_MAX = 6;
 let banditRollTimer = 0;
 let banditGroupSeq  = 0;
 
-// Is there a populated settlement close enough that this counts as "in town"?
-function nearSettlement(x, y) {
-  const cx = Math.floor(x / CHUNK_W), cy = Math.floor(y / CHUNK_W);
-  for (let j = cy - 1; j <= cy + 1; j++) {
-    for (let i = cx - 1; i <= cx + 1; i++) {
-      const l = chunkPop.get(i + "," + j);
-      if (l && l.length) return true;
+// Are you standing in a settlement? Measured in people, at a distance, not in
+// chunks: a chunk test with a one-chunk margin covers 3600 units square, and in
+// the frontier there is a farm or a town within that of almost anywhere -- it
+// suppressed hostile spawning across the entire biome. Four townsfolk inside a
+// thousand units is a town you are standing in; two farmhands and a cow is not,
+// and open country between farms is still open country.
+//
+// Stock does not count. A paddock of horses is not a settlement.
+function nearSettlement(x, y, r) {
+  const R = r || 1000, R2 = R * R;
+  let n = 0;
+  for (const l of chunkPop.values()) {
+    for (let i = 0; i < l.length; i++) {
+      const e = l[i];
+      if (e.eType === "COW" || e.eType === "HORSE") continue;
+      if (e.hp <= 0 || e.dead) continue;
+      const dx = e.x - x, dy = e.y - y;
+      if (dx * dx + dy * dy < R2 && ++n >= 4) return true;
     }
   }
   return false;
@@ -12685,7 +12784,13 @@ function computeAuthoredCore(solids) {
     x0: Math.floor(x0 / CHUNK_W) * CHUNK_W,
     y0: Math.floor(y0 / CHUNK_W) * CHUNK_W,
     x1: Math.ceil(x1 / CHUNK_W) * CHUNK_W,
-    y1: Math.ceil(y1 / CHUNK_W) * CHUNK_W
+    y1: Math.ceil(y1 / CHUNK_W) * CHUNK_W,
+    // The real extents as well as the chunk-snapped ones. Snapping is right for
+    // deciding which chunks the streamer leaves alone; it is wrong for asking
+    // "am I standing in the story's ground", because it can push the answer a
+    // full chunk past the last building and leave a dead zone that wide around
+    // the sector where nothing at all spawns.
+    rx0: x0, ry0: y0, rx1: x1, ry1: y1
   };
 }
 
@@ -12811,8 +12916,10 @@ function adoptLateAuthoredSolids() {
 function inAuthoredSector(x, y, pad) {
   if (!authoredCore) return false;
   const p = pad || 0;
-  return x > authoredCore.x0 - p && x < authoredCore.x1 + p &&
-         y > authoredCore.y0 - p && y < authoredCore.y1 + p;
+  const c = authoredCore;
+  const x0 = c.rx0 !== undefined ? c.rx0 : c.x0, y0 = c.ry0 !== undefined ? c.ry0 : c.y0;
+  const x1 = c.rx1 !== undefined ? c.rx1 : c.x1, y1 = c.ry1 !== undefined ? c.ry1 : c.y1;
+  return x > x0 - p && x < x1 + p && y > y0 - p && y < y1 + p;
 }
 
 function hitsAuthored(x, y, w, h, pad) {
