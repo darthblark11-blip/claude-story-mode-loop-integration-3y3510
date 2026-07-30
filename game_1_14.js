@@ -954,12 +954,15 @@ function legacyGenerateMap() {
       buildings.push({ x: 450, y: 250, w: 300, h: 200, isMarket: true });
 
       let townCoords = [
-          {x: 750, y: -430, w: 120, h: 100}, {x: 760, y: -230, w: 100, h: 120},
+          // Nudged 35 and 65 west. At their original x these two shanties and
+          // the STAGE DEPOT shared 30 units of footprint -- a pre-existing
+          // overlap, drawn one over the other.
+          {x: 715, y: -400, w: 120, h: 100}, {x: 835, y: -350, w: 100, h: 120},
           {x: 800, y: -100, w: 150, h: 140}, {x: 950, y: 50, w: 110, h: 90},
           {x: 700, y: 150, w: 130, h: 130},  {x: 850, y: 400, w: 160, h: 110},
           {x: 650, y: 550, w: 100, h: 100},  {x: 900, y: 600, w: 140, h: 140},
           {x: 450, y: 700, w: 220, h: 160, isApartment: true}, 
-          {x: 770, y: -560, w: 180, h: 150, isApartment: true} 
+          {x: 800, y: -700, w: 180, h: 150, isApartment: true} 
       ];
       
       for (let t of townCoords) {
@@ -974,17 +977,12 @@ function legacyGenerateMap() {
       // livery at y -180, they were parked in the middle of it, modern caravans
       // between a schoolhouse and a stage depot. Pushed past the town's south
       // archway, where they read as the shanty overflow outside the town line.
-      // Moved east off the carriageway too. Main Street now runs on as the
-      // through road south of the arch, and at x 1250 these were parked in the
-      // middle of it -- caravans straddling the centre line for a thousand
-      // units. They sit on the flat east of the road instead, which is where a
-      // trailer park ends up anyway: the cheap land just off the highway.
       let trailerParkCoords = [
-          {x: 1860, y:  700, w: 180, h: 80}, {x: 1860, y:  900, w: 180, h: 80},
-          {x: 1860, y: 1100, w: 180, h: 80}, {x: 1860, y: 1300, w: 180, h: 80},
-          {x: 1860, y: 1500, w: 180, h: 80}, {x: 1860, y: 1700, w: 180, h: 80},
-          {x: 2080, y:  800, w: 80, h: 180}, {x: 2080, y: 1200, w: 80, h: 180},
-          {x: 2080, y: 1600, w: 80, h: 180}
+          {x: 1250, y:  700, w: 180, h: 80}, {x: 1250, y:  900, w: 180, h: 80},
+          {x: 1250, y: 1100, w: 180, h: 80}, {x: 1250, y: 1300, w: 180, h: 80},
+          {x: 1250, y: 1500, w: 180, h: 80}, {x: 1250, y: 1700, w: 180, h: 80},
+          {x: 1450, y:  800, w: 80, h: 180}, {x: 1450, y: 1200, w: 80, h: 180},
+          {x: 1450, y: 1600, w: 80, h: 180}
       ];
       
       for (let t of trailerParkCoords) {
@@ -1002,13 +1000,24 @@ function legacyGenerateMap() {
       //  where they belong. Roughly 2500 by 3400 units against the old 800 by
       //  1200, with twenty-nine named premises instead of ten.
       //
-      //  ORIENTATION. Every storefront used to be drawn facing down the screen,
-      //  with only a vertical mirror available, so both kerbs of a street that
-      //  runs north-south showed the camera their front instead of showing it to
-      //  the street. Buildings now carry a `facing` and the renderer rotates to
-      //  it: west kerb faces EAST, east kerb faces WEST, and the two sides of
-      //  Front Street face each other. Frontage runs along the street and depth
-      //  runs away from it, so the footprints turn with the facades.
+      //  LAYOUT. This is the plan the town was laid out to, unchanged: two
+      //  columns flanking Main Street at MAIN_X +/- 290, Front Street crossing
+      //  at FRONT_Y with a row on each side, the trades that cannot sit on a
+      //  high street pushed out to the edges. The only building that moved is
+      //  the mine head, and only sideways -- it straddled Main Street's centre
+      //  line, with the carriageway and its ruts running under it, and there is
+      //  no width of road that both reaches the north end of town and misses a
+      //  building parked on the centre line.
+      //
+      //  ORIENTATION. What changed is which way each premises looks. Every
+      //  storefront used to be drawn facing down the screen with only a
+      //  vertical mirror available, so both kerbs of a street that runs north to
+      //  south showed the camera their front instead of showing it to the
+      //  street. Buildings carry a `facing` now and the renderer rotates to it:
+      //  west kerb faces EAST, east kerb faces WEST, and the two sides of Front
+      //  Street face each other. The footprint is untouched -- a 210 x 140
+      //  premises turned east simply has a 140-long frontage and 210 of depth
+      //  behind it, which is the shape of a real storefront anyway.
       //
       //  ARCHETYPE. `arch` picks one of nine silhouettes -- see
       //  drawWesternBuilding(). Chosen by what the premises does, the way a real
@@ -1023,158 +1032,102 @@ function legacyGenerateMap() {
       // ###################################################################
       const MAIN_X = 1300;          // Main Street centre line
       const FRONT_Y = -1140;        // Front Street centre line (and the plaza)
-      // Kerb lines: the facade plane, not the building centre. A row placer
-      // works out the centres from the depth of each premises, so fronts stay
-      // flush along the street however deep the building behind them is.
-      // Set so the boardwalk's outer plank lands on the road's outer verge and
-      // the strip between them is the shoulder the troughs and hitching rails
-      // stand on. See DG_ROADS below for the matching carriageway widths.
-      const W_KERB = MAIN_X - 235, E_KERB = MAIN_X + 235;
-      const N_KERB = FRONT_Y - 235, S_KERB = FRONT_Y + 235;
+      const WEST_COL = MAIN_X - 290, EAST_COL = MAIN_X + 290;
 
-      const westernBuildings = [];
-      // Walks a frontage, seating each premises against the kerb with a small
-      // alley behind the gap. Flush fronts and narrow gaps are what make a
-      // frontier street read as a street rather than as scattered boxes.
-      const rowAlong = (kerb, facing, start, list) => {
-          let cur = start;
-          for (const t of list) {
-              const along = cur + t.front / 2;
-              const away  = (facing === "E" || facing === "S") ? kerb - t.depth / 2
-                                                               : kerb + t.depth / 2;
-              const vertical = facing === "E" || facing === "W";
-              westernBuildings.push({
-                  x: vertical ? away  : along,
-                  y: vertical ? along : away,
-                  w: vertical ? t.depth : t.front,
-                  h: vertical ? t.front : t.depth,
-                  facing, sign: t.sign, arch: t.arch, accent: t.accent,
-                  hasBell: t.hasBell, isChurch: t.arch === "CHAPEL" && !t.hasBell,
-                  isLivery: t.arch === "BARN"
-              });
-              cur = along + t.front / 2 + (t.gap === undefined ? 34 : t.gap);
-          }
-      };
+      let westernBuildings = [
+          // -- Main Street, north end: the respectable trades ---------------
+          { x: WEST_COL,      y: -2560, w: 210, h: 140, sign: "HOTEL",         f: "E", arch: "TWO_STOREY",  accent: "red" },
+          { x: EAST_COL - 10, y: -2560, w: 180, h: 140, sign: "JAIL",          f: "W", arch: "STONE" },
+          { x: WEST_COL + 10, y: -2280, w: 190, h: 130, sign: "TELEGRAPH",     f: "E", arch: "FALSE_FRONT" },
+          { x: EAST_COL,      y: -2280, w: 200, h: 130, sign: "ASSAY OFFICE",  f: "W", arch: "STONE", accent: "teal" },
+          { x: WEST_COL,      y: -2000, w: 200, h: 135, sign: "GENERAL STORE", f: "E", arch: "FALSE_FRONT", accent: "teal" },
+          { x: EAST_COL - 10, y: -2000, w: 180, h: 135, sign: "SHERIFF",       f: "W", arch: "STONE", accent: "red" },
+          { x: WEST_COL + 5,  y: -1730, w: 230, h: 145, sign: "SALOON",        f: "E", arch: "TWO_STOREY", accent: "teal" },
+          { x: EAST_COL,      y: -1730, w: 195, h: 130, sign: "BANK",          f: "W", arch: "STONE", accent: "red" },
+          { x: WEST_COL,      y: -1470, w: 175, h: 125, sign: "DOCTOR",        f: "E", arch: "FALSE_FRONT", accent: "red" },
+          { x: EAST_COL + 5,  y: -1470, w: 200, h: 125, sign: "BLACKSMITH",    f: "W", arch: "BARN" },
 
-      // -- Main Street, west kerb: facades turned east onto the carriageway --
-      // Both kerbs break at the plaza, so Front Street crosses open ground
-      // rather than running through a row of back walls.
-      rowAlong(W_KERB, "E", -2660, [
-          { sign: "HOTEL",       arch: "TWO_STOREY",  front: 220, depth: 165, accent: "red",  gap: 70 },
-          { sign: "TELEGRAPH",   arch: "FALSE_FRONT", front: 165, depth: 130, gap: 26 },
-          { sign: "GENERAL STORE", arch: "FALSE_FRONT", front: 195, depth: 145, accent: "teal", gap: 84 },
-          { sign: "SALOON",      arch: "TWO_STOREY",  front: 235, depth: 170, accent: "teal", gap: 30 },
-          { sign: "DOCTOR",      arch: "FALSE_FRONT", front: 155, depth: 125, accent: "red" }
-      ]);
-      rowAlong(W_KERB, "E", -880, [
-          { sign: "SCHOOLHOUSE", arch: "CHAPEL",      front: 190, depth: 150, hasBell: true, gap: 78 },
-          { sign: "STAGE DEPOT", arch: "BARN",        front: 215, depth: 175, gap: 30 },
-          { sign: "CHURCH",      arch: "CHAPEL",      front: 210, depth: 175 }
-      ]);
-      // -- Main Street, east kerb: facades turned west ----------------------
-      rowAlong(E_KERB, "W", -2620, [
-          { sign: "JAIL",         arch: "STONE",       front: 170, depth: 140, gap: 24 },
-          { sign: "ASSAY OFFICE", arch: "STONE",       front: 180, depth: 145, accent: "teal", gap: 92 },
-          { sign: "SHERIFF",      arch: "STONE",       front: 175, depth: 140, accent: "red",  gap: 28 },
-          { sign: "BANK",         arch: "STONE",       front: 200, depth: 160, accent: "red",  gap: 88 },
-          { sign: "BLACKSMITH",   arch: "BARN",        front: 200, depth: 165 }
-      ]);
-      rowAlong(E_KERB, "W", -880, [
-          { sign: "MERCANTILE",   arch: "FALSE_FRONT", front: 190, depth: 145, accent: "teal", gap: 26 },
-          { sign: "PRINT SHOP",   arch: "FALSE_FRONT", front: 165, depth: 130, gap: 82 },
-          { sign: "LIVERY STABLE", arch: "BARN",       front: 250, depth: 190 }
-      ]);
-      // -- Front Street, north kerb: facades turned south -------------------
-      rowAlong(N_KERB, "S", MAIN_X - 960, [
-          { sign: "FEED & SEED", arch: "BARN",        front: 200, depth: 150, gap: 40 },
-          { sign: "BARBER",      arch: "FALSE_FRONT", front: 170, depth: 125, accent: "red" }
-      ]);
-      rowAlong(N_KERB, "S", MAIN_X + 440, [
-          { sign: "LAND OFFICE", arch: "ADOBE",       front: 205, depth: 145, gap: 44 },
-          { sign: "GUNSMITH",    arch: "FALSE_FRONT", front: 180, depth: 130, accent: "teal" }
-      ]);
-      // -- Front Street, south kerb: facades turned north ------------------
-      rowAlong(S_KERB, "N", MAIN_X - 960, [
-          { sign: "DRY GOODS", arch: "FALSE_FRONT", front: 200, depth: 140, accent: "red", gap: 46 },
-          { sign: "BATH HOUSE", arch: "TENT",       front: 175, depth: 135, accent: "teal" }
-      ]);
-      rowAlong(S_KERB, "N", MAIN_X + 440, [
-          { sign: "TELEGRAPH CO", arch: "ADOBE",  front: 190, depth: 140, gap: 42 },
-          { sign: "UNDERTAKER",   arch: "CABIN",  front: 195, depth: 145, accent: "red" }
-      ]);
+          // -- Front Street, north side (facing down onto the crossing) -----
+          { x: MAIN_X - 830, y: FRONT_Y - 210, w: 200, h: 130, sign: "FEED & SEED", f: "S", arch: "BARN" },
+          { x: MAIN_X - 560, y: FRONT_Y - 210, w: 185, h: 130, sign: "BARBER",      f: "S", arch: "FALSE_FRONT", accent: "red" },
+          { x: MAIN_X + 560, y: FRONT_Y - 210, w: 210, h: 130, sign: "LAND OFFICE", f: "S", arch: "ADOBE" },
+          { x: MAIN_X + 840, y: FRONT_Y - 210, w: 190, h: 130, sign: "GUNSMITH",    f: "S", arch: "FALSE_FRONT", accent: "teal" },
 
-      // -- Outskirts: trades that cannot sit on a high street ---------------
-      // Turned toward town so their yards open onto the approach roads.
-      westernBuildings.push(
-          { x: MAIN_X - 1090, y: -1900, w: 175, h: 235, facing: "E", sign: "MILL",
-            arch: "BARN", isLivery: true },
-          { x: MAIN_X + 1130, y: -1900, w: 150, h: 210, facing: "W", sign: "STOCKYARD OFFICE",
-            arch: "ADOBE", accent: "teal" },
-          { x: MAIN_X - 1120, y: -420,  w: 150, h: 205, facing: "E", sign: "TANNERY",
-            arch: "CABIN" },
-          { x: MAIN_X + 1160, y: -430,  w: 190, h: 250, facing: "W", sign: "FREIGHT BARN",
-            arch: "BARN", accent: "red", isLivery: true },
-          // Off the carriageway. This used to straddle Main Street's centre line
-          // at x MAIN_X+30 with the street's ruts running under it, which is the
-          // building the road was driving through. The street now dead-ends into
-          // the mine gate and the headframe stands clear on its bench, west.
-          { x: MAIN_X - 470, y: -2930, w: 250, h: 200, facing: "S", sign: "MINE HEAD",
-            arch: "HEADFRAME" }
-      );
+          // -- Front Street, south side (turned to face back up) ------------
+          { x: MAIN_X - 830, y: FRONT_Y + 230, w: 205, h: 130, sign: "DRY GOODS",    f: "N", arch: "FALSE_FRONT", accent: "red" },
+          { x: MAIN_X - 555, y: FRONT_Y + 230, w: 190, h: 130, sign: "BATH HOUSE",   f: "N", arch: "TENT", accent: "teal" },
+          { x: MAIN_X + 555, y: FRONT_Y + 230, w: 195, h: 130, sign: "TELEGRAPH CO", f: "N", arch: "ADOBE" },
+          { x: MAIN_X + 835, y: FRONT_Y + 230, w: 215, h: 130, sign: "UNDERTAKER",   f: "N", arch: "CABIN", accent: "red" },
+
+          // -- Main Street, south end --------------------------------------
+          { x: WEST_COL,      y: -720, w: 195, h: 130, sign: "SCHOOLHOUSE",   f: "E", arch: "CHAPEL", hasBell: true },
+          { x: EAST_COL,      y: -720, w: 205, h: 130, sign: "MERCANTILE",    f: "W", arch: "FALSE_FRONT", accent: "teal" },
+          { x: WEST_COL + 10, y: -450, w: 200, h: 135, sign: "STAGE DEPOT",   f: "E", arch: "BARN" },
+          { x: EAST_COL - 5,  y: -450, w: 190, h: 130, sign: "PRINT SHOP",    f: "W", arch: "FALSE_FRONT" },
+          { x: WEST_COL - 10, y: -180, w: 185, h: 175, sign: "CHURCH",        f: "E", arch: "CHAPEL" },
+          { x: EAST_COL + 15, y: -180, w: 240, h: 140, sign: "LIVERY STABLE", f: "W", arch: "BARN", accent: "red" },
+
+          // -- Outskirts ----------------------------------------------------
+          { x: MAIN_X - 1080, y: -1900, w: 230, h: 150, sign: "MILL",             f: "E", arch: "BARN" },
+          { x: MAIN_X + 1120, y: -1900, w: 215, h: 145, sign: "STOCKYARD OFFICE", f: "W", arch: "ADOBE", accent: "teal" },
+          { x: MAIN_X - 1120, y: -420,  w: 200, h: 140, sign: "TANNERY",          f: "E", arch: "CABIN" },
+          { x: MAIN_X + 1150, y: -430,  w: 245, h: 150, sign: "FREIGHT BARN",     f: "W", arch: "BARN", accent: "red" },
+          // Was x MAIN_X + 30: dead on Main Street's centre line, with the
+          // carriageway painted under it and the ruts running through the shaft
+          // collar. Moved west onto its own bench at the head of the street,
+          // which is where a mine head belongs -- above the town, not in it.
+          { x: MAIN_X - 520, y: -2900, w: 260, h: 160, sign: "MINE HEAD",         f: "S", arch: "HEADFRAME" }
+      ];
       for (let t of westernBuildings) {
           buildings.push({ x: t.x, y: t.y, w: t.w, h: t.h, isWesternBldg: true,
                            signText: t.sign, arch: t.arch, accent: t.accent,
-                           hasBell: t.hasBell, isChurch: t.isChurch, isLivery: t.isLivery,
-                           facing: t.facing });
+                           hasBell: t.hasBell,
+                           isChurch: t.arch === "CHAPEL" && !t.hasBell,
+                           isLivery: t.arch === "BARN",
+                           facing: t.f });
       }
+
       // -- Street furniture -------------------------------------------------
       // Hand-placed rather than scattered: a trough belongs beside a hitching
       // rail, barrels stack against a wall, hay goes by the stable. Randomly
       // strewn props are what makes a town look like a prop bin.
-      //
-      // Re-seated against the new kerbs. Troughs and wagons stand on the
-      // shoulder -- the strip of dirt between the boardwalk's outer plank and
-      // the road's verge -- and crates sit up on the walk itself. Against the
-      // old building-centre columns half of these ended up either inside a wall
-      // or out in the middle of the carriageway.
-      const SHOULDER_W = MAIN_X - 158, SHOULDER_E = MAIN_X + 158;
       const townProps = [
-          // Water troughs along Main Street, alternating shoulders
-          { x: SHOULDER_W, y: -2420, w: 74, h: 30, isCrateProp: true },
-          { x: SHOULDER_E, y: -2150, w: 74, h: 30, isCrateProp: true },
-          { x: SHOULDER_W, y: -1870, w: 74, h: 30, isCrateProp: true },
-          { x: SHOULDER_E, y: -1600, w: 74, h: 30, isCrateProp: true },
-          { x: SHOULDER_W, y: -1430, w: 74, h: 30, isCrateProp: true },
-          { x: SHOULDER_E, y: -600,  w: 74, h: 30, isCrateProp: true },
-          { x: SHOULDER_W, y: -330,  w: 74, h: 30, isCrateProp: true },
-          // Crates stacked on the walk outside the stores that would have them
-          { x: W_KERB + 6, y: -1990, w: 44, h: 44, isCrateProp: true },
-          { x: W_KERB + 6, y: -1940, w: 38, h: 38, isCrateProp: true },
-          { x: E_KERB - 6, y: -760,  w: 44, h: 44, isCrateProp: true },
-          { x: MAIN_X - 700, y: N_KERB + 8, w: 44, h: 44, isCrateProp: true },
-          { x: MAIN_X + 950, y: S_KERB - 8, w: 44, h: 44, isCrateProp: true },
+          // Water troughs and barrels along Main Street, alternating kerbs
+          { x: MAIN_X - 150, y: -2420, w: 74, h: 30, isCrateProp: true },
+          { x: MAIN_X + 150, y: -2150, w: 74, h: 30, isCrateProp: true },
+          { x: MAIN_X - 150, y: -1870, w: 74, h: 30, isCrateProp: true },
+          { x: MAIN_X + 150, y: -1600, w: 74, h: 30, isCrateProp: true },
+          { x: MAIN_X - 150, y: -1330, w: 74, h: 30, isCrateProp: true },
+          { x: MAIN_X + 150, y: -600,  w: 74, h: 30, isCrateProp: true },
+          { x: MAIN_X - 150, y: -330,  w: 74, h: 30, isCrateProp: true },
+          // Crates stacked outside the stores that would have them
+          { x: WEST_COL + 130, y: -1930, w: 44, h: 44, isCrateProp: true },
+          { x: WEST_COL + 130, y: -1880, w: 38, h: 38, isCrateProp: true },
+          { x: EAST_COL + 130, y: -655,  w: 44, h: 44, isCrateProp: true },
+          { x: MAIN_X - 700,  y: FRONT_Y - 120, w: 44, h: 44, isCrateProp: true },
+          { x: MAIN_X + 950,  y: FRONT_Y + 150, w: 44, h: 44, isCrateProp: true },
           // Hay by the stable, the freight barn and the mill
-          { x: E_KERB + 250, y: -120, w: 60, h: 46, isHayBale: true },
-          { x: E_KERB + 250, y: -50,  w: 60, h: 46, isHayBale: true },
-          { x: MAIN_X + 1010, y: -300, w: 60, h: 46, isHayBale: true },
-          { x: MAIN_X - 940,  y: -1790, w: 60, h: 46, isHayBale: true },
+          { x: EAST_COL + 170, y: -100, w: 60, h: 46, isHayBale: true },
+          { x: EAST_COL + 170, y: -30,  w: 60, h: 46, isHayBale: true },
+          { x: MAIN_X + 1150,  y: -320, w: 60, h: 46, isHayBale: true },
+          { x: MAIN_X - 1080,  y: -1790, w: 60, h: 46, isHayBale: true },
           // Wagons: one at the depot, one at the freight barn, one broken down
-          { x: SHOULDER_W, y: -520, w: 96, h: 54, isWagonProp: true },
-          { x: MAIN_X + 980, y: -560, w: 96, h: 54, isWagonProp: true },
-          { x: MAIN_X - 980, y: -1000, w: 96, h: 54, isWagonProp: true },
-          // The town well, off both carriageways on the plaza's north-west
-          // apron, and a second one out by the corrals
-          { x: MAIN_X - 430, y: FRONT_Y - 300, w: 58, h: 58, isWell: true },
+          { x: WEST_COL + 150, y: -370, w: 96, h: 54, isWagonProp: true },
+          { x: MAIN_X + 1010,  y: -430, w: 96, h: 54, isWagonProp: true },
+          { x: MAIN_X - 980,   y: -1000, w: 96, h: 54, isWagonProp: true },
+          // The town well on the plaza's western apron, off both carriageways,
+          // and a second one out by the corrals
+          { x: MAIN_X - 430, y: FRONT_Y - 320, w: 58, h: 58, isWell: true },
           { x: MAIN_X + 1010, y: -1750, w: 58, h: 58, isWell: true },
           // Water towers: one for the town, one for the depot
-          { x: MAIN_X + 470, y: -2700, w: 72, h: 72, isWaterTower: true },
-          { x: MAIN_X - 470, y: -560,  w: 72, h: 72, isWaterTower: true },
+          { x: MAIN_X + 430, y: -2700, w: 72, h: 72, isWaterTower: true },
+          { x: MAIN_X - 430, y: -560,  w: 72, h: 72, isWaterTower: true },
           // Cacti on the approaches, where nothing has been cleared
           { x: MAIN_X - 1320, y: -2300, w: 40, h: 66, isCactusProp: true },
           { x: MAIN_X + 1400, y: -2500, w: 40, h: 72, isCactusProp: true },
           { x: MAIN_X - 1360, y: -800,  w: 40, h: 60, isCactusProp: true },
           { x: MAIN_X + 1420, y: -60,   w: 40, h: 70, isCactusProp: true },
-          { x: MAIN_X - 760,  y: -3080, w: 40, h: 64, isCactusProp: true },
+          { x: MAIN_X - 800,  y: -3080, w: 40, h: 64, isCactusProp: true },
           { x: MAIN_X + 340,  y: -3120, w: 40, h: 58, isCactusProp: true }
       ];
       for (let t of townProps) buildings.push(t);
@@ -1213,11 +1166,9 @@ function legacyGenerateMap() {
               rail(x1 - T / 2, y0 + T + py + seg / 2, T, seg);
           }
       };
-      // Shifted clear of Front Street's verge -- the two northern pens used to
-      // clip it by a couple of dozen units.
       pen(MAIN_X + 900, -160, 460, 380);
-      pen(MAIN_X + 900, -1580, 420, 340);
-      pen(MAIN_X - 950, -1580, 400, 320);
+      pen(MAIN_X + 900, -1500, 420, 340);
+      pen(MAIN_X - 950, -1500, 400, 320);
 
       // The old town perimeter is gone.
       //
@@ -1234,7 +1185,7 @@ function legacyGenerateMap() {
       // depot already.
 
       // Scattered western dressing
-      buildings.push({ x: 1000, y: -1450, w: 75, h: 55, isWagonProp: true });
+      buildings.push({ x: 1000, y: -1260, w: 75, h: 55, isWagonProp: true });
       buildings.push({ x: 830,  y: -1900, w: 35, h: 55, isCactusProp: true });
       buildings.push({ x: 1770, y: -1550, w: 30, h: 50, isCactusProp: true });
       buildings.push({ x: 950,  y: -1580, w: 30, h: 30, isCrateProp: true });
@@ -1750,26 +1701,31 @@ function drawWesternBuilding(b) {
 //  a sum so overlapping benches step instead of piling up. Everything reads
 //  from it: the render scale, the shadow throw, and how hard it is to walk up.
 // ###########################################################################
-const ELEV_SCALE   = 0.00185;   // render scale gained per unit of height
-const ELEV_SCALE_LO = 0.86, ELEV_SCALE_HI = 1.22;
+// A figure on the top bench reads a quarter larger than one on the flat. At the
+// first pass this was 11% and you could not see it, which is the whole point of
+// the cue -- if the size difference is not obvious the relief is not there.
+const ELEV_SCALE   = 0.0026;
+const ELEV_SCALE_LO = 0.88, ELEV_SCALE_HI = 1.30;
 const ELEV_ZONES = {
   3: [
-    // The mine bench: the whole north-west shelf the headframe and its spoil
-    // stand on, climbing away from the head of Main Street.
-    { x: 860, y: -2960, w: 980, h: 540, f: 210, z: 62, treads: 0 },
-    // A stair cut into the bench where the haul road leaves it for the street
-    { x: 1180, y: -2960, w: 150, h: 260, f: 60,  z: 40, treads: 7 },
-    // Boot hill: the knoll the church sits on at the south end of town
-    { x: 1010, y: -300, w: 480, h: 560, f: 190, z: 26, treads: 0 },
-    { x: 1150, y: -300, w: 120, h: 240, f: 44,  z: 18, treads: 5 },
-    // The stock bench east of town -- the corrals stand above the flat, which
-    // is why the drovers' road runs below them
-    { x: 2200, y: -160, w: 700, h: 620, f: 240, z: 44, treads: 0 },
-    { x: 1900, y: -160, w: 150, h: 260, f: 58,  z: 30, treads: 6 },
+    // The mine bench: the shelf the headframe and its spoil stand on at the
+    // head of Main Street, and the stair the haul road takes down to the town.
+    { x: 780,  y: -2900, w: 900, h: 560, f: 190, z: 96, treads: 0 },
+    { x: 1170, y: -2900, w: 170, h: 250, f: 55,  z: 64, treads: 7 },
+    // Boot hill. Deliberately laid ACROSS the south end of Main Street rather
+    // than tucked off to one side: the walk out of town climbs it, so the size
+    // change happens on the route everybody takes instead of somewhere you have
+    // to go looking for it.
+    { x: 1240, y: -230, w: 880, h: 600, f: 200, z: 58, treads: 0 },
+    { x: 1300, y: 130,  w: 380, h: 220, f: 55,  z: 40, treads: 6 },
+    // The stock bench east of town -- the corrals stand above the flat, which is
+    // why the drovers' road runs below them.
+    { x: 2200, y: -160, w: 700, h: 620, f: 230, z: 74, treads: 0 },
+    { x: 1900, y: -160, w: 170, h: 280, f: 58,  z: 48, treads: 6 },
     // Hotel and bank steps: small, but they put the two hero buildings up a
-    // course from the walk
-    { x: 1010, y: -2550, w: 250, h: 250, f: 40, z: 14, treads: 3 },
-    { x: 1560, y: -1660, w: 240, h: 240, f: 40, z: 14, treads: 3 }
+    // course from the walk.
+    { x: 1010, y: -2560, w: 250, h: 250, f: 40, z: 18, treads: 3 },
+    { x: 1590, y: -1730, w: 240, h: 240, f: 40, z: 18, treads: 3 }
   ]
 };
 // The relief belongs to the authored sector. Once a level's arc is cleared it
@@ -1815,61 +1771,78 @@ function elevSpeedFactor(x, y, vx, vy) {
   return f < 0.62 ? 0.62 : f > 1.1 ? 1.1 : f;
 }
 
-// The relief itself: lit crown, scarp shadow thrown along the scene's own light
-// vector, a rim of catchlight on the side facing it, and treads on the flights.
+// The relief itself. Three cues, in the order they are laid down:
 //
-// Painted into the chunk terrain buffer, not per frame. The mine bench alone is
-// 980x540 and takes ten stacked alpha rects to feather its edge; at device pixel
-// ratio 3 that was 2.7 ms of fill every frame for geometry that never moves.
-// Baked, it costs nothing to look at.
+//   1. A HARD-EDGED drop shadow, offset along the scene's own light vector by
+//      the bench's height. A feathered shadow reads as a stain on the sand; a
+//      shadow with a defined boundary reads as a step, which is the only way an
+//      overhead camera can show a change in level at all.
+//   2. The crown, feathered inward over the zone's own ramp so the ground rises
+//      into it rather than starting on a line.
+//   3. A lip catchlight along the two faces the sun is on, which is where the
+//      top of a scarp catches light in the real thing.
+//
+// Painted into the chunk terrain buffer, not per frame: at device pixel ratio 3
+// the live version cost 2.7 ms on the mine bench for geometry that never moves.
 function bakeElevation(g, ox, oy) {
   const zs = elevZones();
   if (!zs) return;
-  const LAY = 5;
   g.noStroke();
   for (const z of zs) {
-    if (z.x + z.w / 2 < ox - 240 || z.x - z.w / 2 > ox + CHUNK_W + 240) continue;
-    if (z.y + z.h / 2 < oy - 240 || z.y - z.h / 2 > oy + CHUNK_W + 240) continue;
-    const r = Math.min(46, z.f * 0.5);
-    const thr = z.z * 0.9;
-    // Both the crown and its scarp are laid down as a stack of insets over the
-    // zone's own feather distance, so the tone fades exactly where the height
-    // field ramps. A single rounded rect gave the bench a hard vertical line
-    // down the desert -- the plateau read as a decal rather than as ground.
-    const band = (dx, dy, cr, cg, cb, peak) => {
-      for (let k = 0; k < LAY; k++) {
-        const t = (k + 1) / LAY;
-        const ins = z.f * (1 - t);
-        g.fill(cr, cg, cb, peak * t / LAY * 2.2);
-        g.rect(z.x - z.w / 2 + ins + dx, z.y - z.h / 2 + ins + dy,
-               z.w - ins * 2, z.h - ins * 2, r);
-      }
-    };
-    // Scarp: the ground the bench keeps the sun off, thrown along the scene's
-    // one light vector like every other shadow in the world.
-    band(LIGHT_DX * thr, LIGHT_DY * thr, 58, 44, 32, 40);
-    // Crown, warmer and brighter the higher it stands.
-    const lift = Math.min(26, z.z * 0.4);
-    band(0, 0, 234, 216, 180, 20 + lift * 0.9);
-    // Rim catchlight along the two faces the light comes from. Thick enough to
-    // survive the bake, which is a third of a pixel per world unit.
-    g.fill(248, 236, 206, 34 + lift);
-    g.rect(z.x - z.w / 2 + z.f * 0.5, z.y - z.h / 2 + z.f * 0.5, z.w - z.f, 12, r);
-    g.rect(z.x - z.w / 2 + z.f * 0.5, z.y - z.h / 2 + z.f * 0.5, 12, z.h - z.f, r);
-    // Treads. A flight takes the height in one go and reads as relief in a way
-    // a smooth ramp never can from directly above.
+    if (z.x + z.w / 2 < ox - 300 || z.x - z.w / 2 > ox + CHUNK_W + 300) continue;
+    if (z.y + z.h / 2 < oy - 300 || z.y - z.h / 2 > oy + CHUNK_W + 300) continue;
+    const r = Math.min(40, z.f * 0.4);
+    const thr = z.z * 1.05;
+    const x0 = z.x - z.w / 2, y0 = z.y - z.h / 2;
+
+    // 1. Scarp. Three copies of the footprint at decreasing offset build a
+    // penumbra that still has an outer edge you can point at.
+    for (let k = 3; k >= 1; k--) {
+      g.fill(52, 40, 28, 30);
+      g.rect(x0 + LIGHT_DX * thr * (k / 3), y0 + LIGHT_DY * thr * (k / 3), z.w, z.h, r);
+    }
+
+    // 2. Crown, feathered in over the ramp.
+    const lift = Math.min(34, z.z * 0.34);
+    for (let k = 0; k < 5; k++) {
+      const t = (k + 1) / 5;
+      const ins = z.f * (1 - t) * 0.85;
+      g.fill(236, 219, 184, (16 + lift) * t / 5 * 2.2);
+      g.rect(x0 + ins, y0 + ins, z.w - ins * 2, z.h - ins * 2, r);
+    }
+
+    // 3. Lip along the up-light faces -- north and west, since the light comes
+    // from up and to the left in every scene in the game.
+    const lipI = z.f * 0.38;
+    g.fill(250, 240, 212, 44 + lift * 1.4);
+    g.rect(x0 + lipI, y0 + lipI, z.w - lipI * 2, 14, r);
+    g.rect(x0 + lipI, y0 + lipI, 14, z.h - lipI * 2, r);
+
+    // 4. Treads. A flight takes the height in one go, and stepped risers are the
+    // single most readable relief cue there is from directly above.
     if (z.treads) {
-      const vertical = z.h >= z.w;
+      // A flight is subdivided across the direction you climb, which is its
+      // SHORTER axis: a 380-wide flight 220 deep is climbed north, so the steps
+      // stack along y. Keying off the longer axis put the gate steps side by
+      // side across the road, which read as a pedestrian crossing.
+      const alongY = z.h < z.w;
       const n = z.treads;
       for (let k = 0; k < n; k++) {
-        const t = k / n, tw = 1 - t * 0.18;
-        g.fill(206, 186, 150, 130);
-        if (vertical) g.rect(z.x - (z.w / 2) * tw, z.y - z.h / 2 + (z.h / n) * k, z.w * tw, z.h / n - 8, 2);
-        else          g.rect(z.x - z.w / 2 + (z.w / n) * k, z.y - (z.h / 2) * tw, z.w / n - 8, z.h * tw, 2);
-        g.fill(74, 58, 42, 70);
-        if (vertical) g.rect(z.x - (z.w / 2) * tw, z.y - z.h / 2 + (z.h / n) * k + z.h / n - 8, z.w * tw, 8);
-        else          g.rect(z.x - z.w / 2 + (z.w / n) * k + z.w / n - 8, z.y - (z.h / 2) * tw, 8, z.h * tw);
+        const t = k / n, tw = 1 - t * 0.2;      // narrows as it rises
+        const riser = alongY ? (z.h / n) * 0.4 : (z.w / n) * 0.4;
+        // Riser first: the shaded face of the step you are about to climb.
+        g.fill(66, 51, 36, 96);
+        if (alongY) g.rect(z.x - (z.w / 2) * tw, y0 + (z.h / n) * k, z.w * tw, riser, 2);
+        else        g.rect(x0 + (z.w / n) * k, z.y - (z.h / 2) * tw, riser, z.h * tw, 2);
+        // Then the tread it lands on.
+        g.fill(226, 209, 176, 104);
+        if (alongY) g.rect(z.x - (z.w / 2) * tw, y0 + (z.h / n) * k + riser, z.w * tw, (z.h / n) - riser - 2, 2);
+        else        g.rect(x0 + (z.w / n) * k + riser, z.y - (z.h / 2) * tw, (z.w / n) - riser - 2, z.h * tw, 2);
       }
+      // Handrail down the up-light flank, so the flight has a silhouette.
+      g.fill(112, 84, 52, 170);
+      if (alongY) g.rect(x0 - 9, y0, 9, z.h, 2);
+      else        g.rect(x0, y0 - 9, z.w, 9, 2);
     }
   }
 }
@@ -5580,20 +5553,22 @@ function legacyDrawGround(skipBase) {
 
       // Continuous boardwalk down both kerbs, joining up the planking each
       // storefront draws for itself so the walk runs unbroken past the alleys.
-      const bwW = 1300 - 235, bwE = 1300 + 235;
+      // Laid on the kerb line the columns front onto -- 1130 and 1490 -- rather
+      // than as the 270-wide slab it used to be, which ran under the buildings.
+      const bwW = 1130, bwE = 1490;
       fill(150, 115, 75); noStroke();
-      rect(bwW - 8, -2700, 34, 1240); rect(bwW - 8, -900, 34, 700);
-      rect(bwE - 26, -2660, 34, 1200); rect(bwE - 26, -900, 34, 700);
+      rect(bwW - 30, -2700, 34, 1420); rect(bwW - 30, -980, 34, 900);
+      rect(bwE - 4, -2700, 34, 1420);  rect(bwE - 4, -980, 34, 900);
       stroke(112, 84, 52, 160); strokeWeight(1);
-      for (let py = -2695; py < -200; py += 15) {
-          if (py > -1460 && py < -900) continue;      // the plaza breaks the walk
-          line(bwW - 8, py, bwW + 26, py);
-          line(bwE - 26, py, bwE + 8, py);
+      for (let py = -2695; py < -80; py += 15) {
+          if (py > -1280 && py < -980) continue;      // the plaza breaks the walk
+          line(bwW - 30, py, bwW + 4, py);
+          line(bwE - 4, py, bwE + 30, py);
       }
       noStroke();
       fill(0, 0, 0, 34);
-      rect(bwW + 22, -2700, 5, 1240); rect(bwW + 22, -900, 5, 700);
-      rect(bwE - 30, -2660, 5, 1200); rect(bwE - 30, -900, 5, 700);
+      rect(bwW, -2700, 5, 1420); rect(bwW, -980, 5, 900);
+      rect(bwE - 8, -2700, 5, 1420); rect(bwE - 8, -980, 5, 900);
 
       // Dusty speckle texture (pre-generated, stays still frame to frame)
       if (window.westernDust) {
@@ -12288,10 +12263,19 @@ const DG_ROADS = {
   3: {
     // The through road. edgeHalf/coreHalf are the verge and carriageway half
     // widths, set so the outer verge lands on the boardwalks' outer plank.
-    spine: { x: 1300, y0: -3000, y1: 2600, edgeHalf: 212, coreHalf: 100 },
+    // Widths are set by the gap the two building columns actually leave:
+    // 1130..1490 on Main Street and -1285..-975 on Front Street. The verge
+    // lands on the boardwalks and the shoulder feathers out from there.
+    spine: { x: 1300, y0: -3100, y1: 220, edgeHalf: 168, coreHalf: 84 },
     cross: [
-      { y: -1140, x0: 120,  x1: 2520, edgeHalf: 212, coreHalf: 100 },  // Front Street
-      { y: 900,   x0: -960, x1: 1300, edgeHalf: 150, coreHalf: 70 }    // farm track
+      { y: -1140, x0: 120, x1: 2520, edgeHalf: 142, coreHalf: 72 }     // Front Street
+    ],
+    // The track keeps out of these entirely, spine column included. Just the
+    // trailer park: it sits astride the line the road would take south out of
+    // town, and a track that fades into the flats at the edge of a settlement is
+    // what actually happens -- a track through nine caravans is not.
+    noTrail: [
+      { x0: 1050, y0: 380, x1: 1620, y1: 2100 }
     ]
   }
 };
@@ -12312,13 +12296,29 @@ function dgSpineWeight(s, wy) {
 function frontierTrailFade(biome, cx, wy) {
   const plan = authoredRoadPlan();
   if (!plan || !authoredCore) return 1;
-  if (Math.floor(plan.spine.x / CHUNK_W) === cx) return 1;
-  if (cx * CHUNK_W + CHUNK_W < authoredCore.x0 || cx * CHUNK_W > authoredCore.x1) return 1;
+  let f = 1;
+  // Declared keep-outs bind every column, the spine's included. A road that
+  // fades out over 700 units into the flats reads as a track petering out at the
+  // edge of the settlement, which is what actually happens; a road that runs
+  // through a mine head or a trailer park does not.
+  if (plan.noTrail) {
+    const RAMP = 700;
+    for (const k of plan.noTrail) {
+      const cxw = cx * CHUNK_W;
+      if (cxw + CHUNK_W < k.x0 || cxw > k.x1) continue;
+      const d = Math.min(wy - k.y0, k.y1 - wy);
+      if (d <= 0) continue;
+      const t = Math.min(1, d / RAMP);
+      f = Math.min(f, 1 - t * t * (3 - 2 * t));
+    }
+  }
+  if (Math.floor(plan.spine.x / CHUNK_W) === cx) return f;
+  if (cx * CHUNK_W + CHUNK_W < authoredCore.x0 || cx * CHUNK_W > authoredCore.x1) return f;
   const RAMP = 700;
   const d = Math.min(wy - authoredCore.y0, authoredCore.y1 - wy);
-  if (d <= 0) return 1;
+  if (d <= 0) return f;
   const t = Math.min(1, d / RAMP);
-  return 1 - t * t * (3 - 2 * t);
+  return Math.min(f, 1 - t * t * (3 - 2 * t));
 }
 function frontierTrailX(biome, cx, wy) {
   const raw = trailCentreX(biome, cx, wy, 0, 600, 300);
@@ -12750,16 +12750,44 @@ function generateChunkContent(biome, cx, cy) {
       } else if (townN < 0.36) {
         // Ration farmland — crop rows and fencing
         if (!nearAnchor(ox + 600, oy + 600, 700)) {
-          const fw = rngRange(rng, 400, 640), fh = rngRange(rng, 380, 600);
-          solid.push({ x: ox + 600, y: oy + 600, w: fw, h: fh, isCropField: true });
-          lat.block(ox + 600, oy + 600, fw + 80, fh + 80);
+          // Planted BESIDE the track, not on it.
+          //
+          // The field used to go in at ox + 600 -- dead centre of the chunk --
+          // and the track's centreline is the chunk centre plus a meander, so
+          // the two were the same place by construction. Every farm chunk in
+          // the biome came out with the road ploughed straight through the crop
+          // rows and through both of the 620-wide fences that bracket them.
+          // Nothing caught it because the field never asked the lattice for a
+          // spot the way the barn and the props do; it only blocked one
+          // afterwards.
+          //
+          // Take the track's closest approach over the field's own height, then
+          // plant on whichever side of it has the room.
+          const fy = oy + 600;
+          let fw = rngRange(rng, 400, 640);
+          const fh = rngRange(rng, 380, 600);
+          let tW = Infinity, tE = -Infinity;
+          for (let k = -1; k <= 1; k++) {
+            const t = frontierTrailX(biome, cx, fy + k * fh / 2);
+            if (t < tW) tW = t;
+            if (t > tE) tE = t;
+          }
+          const CLR = 175;                       // verge, plus a headland to turn a plough in
+          const roomW = (tW - CLR) - (ox + 30);
+          const roomE = (ox + CHUNK_W - 30) - (tE + CLR);
+          const west  = roomW >= roomE;
+          fw = Math.max(200, Math.min(fw, west ? roomW : roomE));
+          const fx = west ? tW - CLR - fw / 2 : tE + CLR + fw / 2;
+
+          solid.push({ x: fx, y: fy, w: fw, h: fh, isCropField: true });
+          lat.block(fx, fy, fw + 80, fh + 80);
           if (rng() > 0.6) {
             const s = lat.take(300, 240);
             if (s) solid.push({ x: s.x, y: s.y, w: 300, h: 240, isBarn: true });
           }
-          let fy = oy + 600;
-          solid.push({ x: ox + 600, y: fy - 340, w: 620, h: 10, isFence: true, hp: 2000, maxHp: 2000 });
-          solid.push({ x: ox + 600, y: fy + 340, w: 620, h: 10, isFence: true, hp: 2000, maxHp: 2000 });
+          // Fences bracket the field, so they take its width and its offset.
+          solid.push({ x: fx, y: fy - 340, w: fw + 20, h: 10, isFence: true, hp: 2000, maxHp: 2000 });
+          solid.push({ x: fx, y: fy + 340, w: fw + 20, h: 10, isFence: true, hp: 2000, maxHp: 2000 });
         }
       }
 
@@ -13251,6 +13279,21 @@ function softStamp(g, x, y, w, h, col, alpha) {
 // ribbon is a constant width.
 function bakeRibbon(g, centreAt, yAt, S0, S1, edgeHalf, coreHalf, edgeCol, coreCol, layers, alpha, widthAt) {
   const wf = widthAt || (() => 1);
+  // Shoulder. Every layer inside the ribbon carried the same alpha, so the
+  // widest one -- the outermost -- landed on the sand at full strength and the
+  // road ended on a hard line down the desert. These are the same colour as the
+  // verge, laid outside edgeHalf at a fifth of the alpha and stepping down as
+  // they widen, which puts a scuffed 90-unit transition either side instead of
+  // an edge. Cheap: they are the same polygon at a different width.
+  const SH = 5;
+  for (let k = SH; k >= 1; k--) {
+    const grow = 1 + (k / SH) * 0.72;
+    g.fill(edgeCol[0], edgeCol[1], edgeCol[2], alpha * 0.34 * (1 - k / (SH + 1)));
+    g.beginShape();
+    for (let s = S0; s <= S1; s++) g.vertex(centreAt(yAt(s)) - edgeHalf * grow * wf(yAt(s)), yAt(s));
+    for (let s = S1; s >= S0; s--) g.vertex(centreAt(yAt(s)) + edgeHalf * grow * wf(yAt(s)), yAt(s));
+    g.endShape(CLOSE);
+  }
   for (let k = 0; k < layers; k++) {
     const t = layers > 1 ? k / (layers - 1) : 1;
     const half = coreHalf + (edgeHalf - coreHalf) * Math.pow(1 - t, 0.6);
@@ -13278,6 +13321,22 @@ function bakeStreet(g, x0, x1, my, edgeHalf, coreHalf, edgeCol, coreCol, layers,
     if (openE) f = Math.min(f, Math.max(0, (x1 - x) / TAPER));
     return f * f * (3 - 2 * f);      // smoothstep, so the taper has no corner
   };
+  // Same feathered shoulder as bakeRibbon, for the same reason.
+  const SH = 5;
+  for (let k = SH; k >= 1; k--) {
+    const grow = 1 + (k / SH) * 0.72;
+    g.fill(edgeCol[0], edgeCol[1], edgeCol[2], alpha * 0.34 * (1 - k / (SH + 1)));
+    g.beginShape();
+    for (let s = 0; s <= STEPS; s++) {
+      const xx = x0 + (s / STEPS) * (x1 - x0);
+      g.vertex(xx, my - edgeHalf * grow * shoulder(xx));
+    }
+    for (let s = STEPS; s >= 0; s--) {
+      const xx = x0 + (s / STEPS) * (x1 - x0);
+      g.vertex(xx, my + edgeHalf * grow * shoulder(xx));
+    }
+    g.endShape(CLOSE);
+  }
   for (let k = 0; k < layers; k++) {
     const t = layers > 1 ? k / (layers - 1) : 1;
     const half = coreHalf + (edgeHalf - coreHalf) * Math.pow(1 - t, 0.6);
@@ -13612,14 +13671,18 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
       bakeRibbon(g, trackAt, yAt, S0, S1, 124, 62,
                  [200, 174, 134], [124,  99,  68], 12, 44, widthAt);
 
-      // Wagon ruts, riding out with the carriageway as it widens
+      // Wagon ruts. Fixed spacing: a rut is an axle width apart and stays that
+      // way whether the road is a track or a high street. Scaling the offsets
+      // with the carriageway made the pair visibly splay apart and close up
+      // again wherever the width changed, which read as the road wobbling.
+      const onTrack = (yy) => widthAt(yy) >= 0.35;
       g.stroke(p.mark[0], p.mark[1], p.mark[2], 150); g.strokeWeight(7); g.noFill();
       for (const side of [-34, 34]) {
         g.beginShape();
         for (let s = S0; s <= S1; s++) {
           const yy = yAt(s);
-          if (widthAt(yy) < 0.2) continue;
-          g.vertex(trackAt(yy) + side * widthAt(yy), yy);
+          if (!onTrack(yy)) continue;
+          g.vertex(trackAt(yy) + side, yy);
         }
         g.endShape();
       }
@@ -13628,8 +13691,8 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
         g.beginShape();
         for (let s = S0; s <= S1; s++) {
           const yy = yAt(s);
-          if (widthAt(yy) < 0.2) continue;
-          g.vertex(trackAt(yy) + side * widthAt(yy), yy);
+          if (!onTrack(yy)) continue;
+          g.vertex(trackAt(yy) + side, yy);
         }
         g.endShape();
       }
@@ -13639,7 +13702,7 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
       for (let i = 0; i < 90; i++) {
         const yy = oy + rng() * CHUNK_W;
         const wf = widthAt(yy);
-        if (wf < 0.2) continue;
+        if (wf < 0.35) continue;
         const sx = trackAt(yy) + (rng() > 0.5 ? 1 : -1) * (52 + rng() * 52) * wf;
         g.fill(p.dark[0], p.dark[1], p.dark[2], 40 + rng() * 55);
         g.ellipse(sx, yy, 3 + rng() * 7, 3 + rng() * 5);
