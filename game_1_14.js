@@ -1371,6 +1371,79 @@ function dgGable(aw, ah, col, colHi, inset) {
 // Every one is built the same way: roof mass first (with a ridge, a parapet or
 // a plane so it is not a flat slab), then the facade band along the street
 // edge, then the openings INSIDE that band, then the walk and the sign.
+// A horse, seen from above, centred on the origin and already rotated by the
+// caller so its head points along +x. Used twice: by a loose horse drawing
+// itself, and by a mounted rider drawing its mount underneath. One function so
+// the two can never drift apart.
+//
+// The gait is the whole animation. Four legs on diagonal pairs -- near fore with
+// off hind -- swinging against each other, the barrel rising and falling on the
+// same phase, the head nodding on half of it and the tail streaming on a slower
+// beat. At a walk the swing is small and the nod is slow; at a gallop the same
+// cycle runs three times as fast and four times as far, which is all it takes to
+// read as a different gait from directly above.
+function drawHorseArt(coat, mane, walk, moving, gallop, sock) {
+  const amp = gallop ? 9 : 3.6;
+  const sw = moving ? sin(walk) * amp : 0;
+  const sw2 = moving ? sin(walk + PI * 0.62) * amp : 0;
+  const heave = moving ? abs(sin(walk)) * (gallop ? 2.6 : 0.9) : 0;
+  const cr = red(coat), cg = green(coat), cb = blue(coat);
+  const dark = (f) => fill(cr * f, cg * f, cb * f);
+
+  push();
+  translate(heave * 0.4, 0);
+
+  // Legs on diagonal pairs, hind heavier than fore.
+  noStroke();
+  dark(0.62);
+  rect(-19 + sw, -13, 7, 9, 3);      // near hind
+  rect(15 + sw2, -12, 6, 8, 3);      // near fore
+  dark(0.5);
+  rect(-19 - sw, 5, 7, 9, 3);        // off hind
+  rect(15 - sw2, 5, 6, 8, 3);        // off fore
+  if (sock) { fill(226, 220, 208); rect(15 + sw2, -12, 6, 3, 2); rect(15 - sw2, 11, 6, 3, 2); }
+
+  // Tail, streaming on a slower beat than the legs.
+  push();
+  translate(-30, 0);
+  rotate(moving ? sin(walk * 0.55) * (gallop ? 0.5 : 0.2) : 0);
+  fill(red(mane), green(mane), blue(mane));
+  quad(0, -3, 0, 3, -15, 6, -13, -5);
+  pop();
+
+  // Barrel: quarters, ribcage, then the withers, so it is not one flat oval.
+  dark(0.86); ellipse(-13, 0, 34, 30);              // hindquarters
+  fill(cr, cg, cb); ellipse(4, 0, 46, 27);          // ribcage
+  dark(1.14); ellipse(9, -4, 30, 12);               // lit top line
+  dark(0.68); ellipse(2, 9, 34, 9);                 // shaded belly line
+
+  // Neck and head, nodding on half the leg beat.
+  push();
+  translate(22, 0);
+  rotate(moving ? sin(walk * 0.5) * (gallop ? 0.22 : 0.08) : 0);
+  fill(cr, cg, cb); quad(-4, -8, 12, -5, 12, 5, -4, 8);            // neck
+  fill(red(mane), green(mane), blue(mane));
+  quad(-4, -8, 12, -5, 12, -2, -4, -4);                            // mane along the crest
+  dark(1.06); ellipse(16, 0, 18, 12);                              // head
+  if (sock) { fill(226, 220, 208); ellipse(20, 0, 7, 5); }         // blaze
+  dark(0.4); ellipse(23, 0, 7, 7);                                 // muzzle
+  fill(18); ellipse(24, -1.6, 1.8, 1.8); ellipse(24, 1.6, 1.8, 1.8);
+  fill(20); ellipse(13, -3.6, 2.6, 2.6); ellipse(13, 3.6, 2.6, 2.6); // eyes
+  dark(0.5); triangle(9, -6, 12, -4, 8, -2); triangle(9, 6, 12, 4, 8, 2); // ears
+  pop();
+  pop();
+}
+
+// Saddle and tack, drawn over the barrel and under the rider.
+function drawHorseTack() {
+  noStroke();
+  fill(74, 52, 34); ellipse(-2, 0, 26, 24);
+  fill(96, 70, 46); ellipse(-2, 0, 20, 18);
+  fill(58, 40, 26); rect(-13, -13, 22, 4, 1); rect(-13, 9, 22, 4, 1);
+  fill(48, 36, 26); rect(14, -7, 16, 2); rect(14, 5, 16, 2);          // reins
+  fill(206, 178, 96); ellipse(-11, -11, 3.5, 3.5); ellipse(-11, 11, 3.5, 3.5);
+}
+
 function drawWesternBuilding(b) {
   const facing = b.facing || (b.faceNorth ? "N" : "S");
   const swap = facing === "E" || facing === "W";
@@ -4780,6 +4853,50 @@ function triggerGateAmbush(fortressY, isNorthGate = false) {
 
 	
 
+// ###########################################################################
+//  BIOME OVERWORLD STATES
+//  Who holds the open world, per biome. This is separate from the authored
+//  sectors and from scripted fights: it is what is out there when the player is
+//  simply crossing country between one settlement and the next.
+//
+//    1, 2  Stick City / the Undercity -- NM-0 regulars, ground only. No aerial
+//          units in the overworld: air support belongs to scripted set pieces,
+//          and a gunship drifting over an empty street is neither a patrol nor
+//          a landmark. They garrison checkpoints and walk the arterials between
+//          them.
+//    3     The frontier -- civilians hold the towns and farms (see the
+//          settlement population layer); the country between them is bandit
+//          ground, and bandits ride.
+//    4     The cordon -- NM-0 Grey Fatigue. The Tan Army mans the cordon posts
+//          as neutrals, so the two forces are in the same biome facing each
+//          other, which is what the sector is about.
+//
+//  5 to 8 keep their existing tables until they are worked on.
+// ###########################################################################
+const OVERWORLD = {
+  1: [["NORMAL", 58], ["ARMORED_STANDARD", 26], ["MOLOTOV", 10], ["ARMORED", 6]],
+  2: [["NORMAL", 46], ["ARMORED_STANDARD", 30], ["MOLOTOV", 14], ["ARMORED", 10]],
+  3: [["BANDIT", 100]],
+  4: [["NM0_GREY_FATIGUE", 68], ["ARMORED_STANDARD", 22], ["ARMORED", 10]]
+};
+function overworldPick(level, r) {
+  const t = OVERWORLD[level];
+  if (!t) return null;
+  let acc = 0, tot = 0;
+  for (const e of t) tot += e[1];
+  const roll = r * tot;
+  for (const e of t) { acc += e[1]; if (roll < acc) return e[0]; }
+  return t[t.length - 1][0];
+}
+// True where the biome's own overworld table applies: streaming, out of any
+// authored sector, and not inside a scripted set piece.
+function inBiomeOverworld() {
+  if (!BIOME_ACTIVE || !OVERWORLD[currentLevel]) return false;
+  if (nm0AmbushActive || farmAmbushActive) return false;
+  if (!player) return false;
+  return !inAuthoredSector(player.x, player.y, 900);
+}
+
 function spawnSingleEnemy() {
   // Do not spawn random hostiles if the town is liberated, ambush is active, or in specific story scenes!
  
@@ -4823,7 +4940,22 @@ function spawnSingleEnemy() {
   if (baseEnemyCount >= TARGET_ENEMY_COUNT) return;
 
   let eS = getSafeSpawn(true), type = "NORMAL", r = random();
-  
+
+  // Biome overworld: the open country has its own garrison and it replaces the
+  // per-level ladder entirely, including its aerial units.
+  if (inBiomeOverworld()) {
+    const t = overworldPick(currentLevel, r);
+    if (t === "BANDIT") {
+      // Lone riders between the posses -- a scout, a straggler.
+      const b = new Character(eS.x, eS.y, false, "BANDIT");
+      if (random() > 0.35) b.mountUp();
+      enemiesList.push(b);
+      return;
+    }
+    enemiesList.push(new Character(eS.x, eS.y, false, t));
+    return;
+  }
+
   if (currentLevel >= 4 && currentLevel <= 6) {
 // REPLACE THIS INSIDE LEVEL 4-6 / LEVEL 6 BUG BLOCKS:
 if (bugCount < 10) {
@@ -5043,7 +5175,8 @@ function triggerExplosion(ex, ey, rad, isMolotov = false, sourceIsPlayer = true)
       if (e.isFriendly) {
           e.takeDamage(150);
       } else {
-          e.hp = 0; 
+          e.hp = 0;
+          if (e.mounted) e.unhorse();
       }
       
       if (e.hp <= 0 && !e.dead) {
@@ -6478,7 +6611,7 @@ class Corpse {
   }
   if (this.eT === "BUG") { r.push(); r.translate(this.x, this.y); r.rotate(this.aA); r.fill(50, 80, 40); r.ellipse(0, 0, 20, 14); r.fill(30); r.ellipse(8, 0, 10, 10); r.stroke(30); r.strokeWeight(2); r.line(-5, 0, -12, 12); r.line(-5, 0, -12, -12); r.line(5, 0, 12, 12); r.line(5, 0, 12, -12); r.noStroke(); for (let d of this.dec) { if (d.col) r.fill(d.col[0], d.col[1], d.col[2], d.col[3]); else r.fill(200, 230, 40, 220); r.ellipse(d.x, d.y, d.sz, d.sz); } r.pop(); return; }
   if (this.eT === "SNAIL") { r.push(); r.translate(this.x, this.y); r.rotate(this.aA); r.fill(20, 100, 20); r.ellipse(0, 0, this.bW, this.bH); r.fill(50, 80, 40); r.ellipse(-5, 0, 24, 20); r.noStroke(); for (let d of this.dec) { if (d.col) r.fill(d.col[0], d.col[1], d.col[2], d.col[3]); else r.fill(50, 200, 50, 220); r.ellipse(d.x, d.y, d.sz, d.sz); } r.pop(); return; }
-if (this.eT === "COW") {
+if (this.eT === "COW" || this.eT === "HORSE") {
       r.push(); r.translate(this.x, this.y); r.rotate(this.aA);
       
       let headDist = 0;
@@ -6496,7 +6629,8 @@ if (this.eT === "COW") {
           r.stroke(30); r.strokeWeight(2);
           r.line(-this.bW/2, 0, -this.bW/2 - 12, 4); r.noStroke();
           
-          r.fill(245); r.ellipse(0, 0, this.bW, this.bH);
+          const hide = this.eT === "HORSE" && this.sC ? this.sC : color(245);
+          r.fill(hide); r.ellipse(0, 0, this.bW, this.bH);
           
           for (let d of this.dec) {
               if (d.col) r.fill(d.col[0], d.col[1], d.col[2], d.col[3]);
@@ -6505,7 +6639,7 @@ if (this.eT === "COW") {
           
           // Dead Head
           r.push(); r.translate(this.bW/2 + 4 + headDist, 4); r.rotate(0.3); // Lolling sideways
-          r.fill(245); r.ellipse(0, 0, 18, 16);
+          r.fill(hide); r.ellipse(0, 0, 18, 16);
           r.fill(255, 170, 170); r.ellipse(7, 0, 10, 12);
           r.fill(15); r.ellipse(2, -5, 3, 3); r.ellipse(2, 5, 3, 3); // Eyes
           r.fill(245); r.ellipse(-3, -8, 6, 4); r.ellipse(-3, 8, 6, 4);
@@ -6863,6 +6997,42 @@ this.punchHitCount = 0;
     if (eT === "ALIEN_GATOR") { this.hp = 250; this.bodyW = 63; this.bodyH = 81; this.shirtCol = color(120); this.pantsCol = color(20, 100, 20); }
     if (eT === "SAUCER" || eT === "SAUCER_RED") { this.hp = 750; this.bodyW = 80; this.bodyH = 80; if (eT === "SAUCER_RED") { this.burstsFired = 0; this.burstCooldown = 0; this.strafeDir = random() > 0.5 ? 1 : -1; } }
     if (eT === "SNAIL_HYBRID") { this.hp = 500; this.bodyW = 63; this.bodyH = 81; this.shirtCol = color(173, 216, 230); this.pantsCol = color(100, 150, 200); this.hybridHeadHP = 100; this.leftEye = 1; this.rightEye = 1; this.enraged = false; this.eyeBleedL = 0; this.eyeBleedR = 0; this.burstsFired = 0; this.burstCooldown = 0; this.strafeDir = random() > 0.5 ? 1 : -1; }
+    // --- HORSE ---------------------------------------------------------
+    // Built on the same pattern as the cow: an animal is a Character with its
+    // own AI branch in updateEnemy() and its own art branch in show(), and it
+    // never touches the stickman path. Unlike a cow it bolts rather than
+    // wanders when something frightens it, which is what a loose horse does and
+    // what makes shooting a rider off one worth doing.
+    if (eT === "HORSE") {
+        this.hp = 260;
+        this.bodyW = 62; this.bodyH = 27;
+        this.isFriendly = true; this.isNeutral = true;
+        this.state = "IDLE";
+        this.timer = floor(random(60, 240));
+        this.boltTimer = 0;
+        const coats = [[92, 62, 40], [58, 44, 36], [142, 108, 72], [46, 42, 44], [176, 152, 118]];
+        const c = coats[floor(random(coats.length))];
+        this.coatCol = color(c[0], c[1], c[2]);
+        this.maneCol = color(c[0] * 0.55, c[1] * 0.55, c[2] * 0.55);
+        this.shirtCol = this.coatCol;
+        this.sock = random() > 0.55;                 // white blaze and stockings
+        this.decals = [];
+    }
+
+    // --- BANDIT --------------------------------------------------------
+    // The frontier's hostile. Same silhouette language as the drovers so the
+    // biome reads as one place, and told apart by the duster, the black hat and
+    // the bandana over the face rather than by being a different shape.
+    if (eT === "BANDIT") {
+        this.hp = 130;
+        this.shirtCol = color(74, 62, 58);
+        this.pantsCol = color(52, 46, 44);
+        this.currentWeapon = WEAPONS.REVOLVER;
+        this.hatCol = color(34, 30, 30);
+        this.vestCol = color(58, 48, 44);
+        this.kerchiefCol = random() > 0.5 ? color(124, 40, 36) : color(40, 44, 54);
+    }
+
    if (eT === "COW") { 
         this.hp = 150; 
         this.bodyW = 45; 
@@ -6926,6 +7096,49 @@ this.skeletonTimer = 0;
   get ammo() { return this.weaponAmmo[this.currentWeapon.name]; }
   set ammo(val) { this.weaponAmmo[this.currentWeapon.name] = val; }
   
+  // Put this character in the saddle. The horse is a property, not a second
+  // entity: one body to collide, one AI to run, one thing to shoot. The animal
+  // only becomes a Character of its own again at the moment it loses its rider,
+  // which is the only moment the difference is visible.
+  mountUp(seed) {
+      const coats = [[92, 62, 40], [58, 44, 36], [142, 108, 72], [46, 42, 44], [176, 152, 118]];
+      const c = coats[floor((seed === undefined ? random() : seed) * coats.length) % coats.length];
+      this.mounted   = true;
+      this.mountCoat = color(c[0], c[1], c[2]);
+      this.mountMane = color(c[0] * 0.55, c[1] * 0.55, c[2] * 0.55);
+      this.mountSock = random() > 0.55;
+      this.mountWalk = random(TWO_PI);
+      return this;
+  }
+
+  // Shot off the horse. The animal survives, and it bolts -- which is the point
+  // of modelling it at all, because a posse that leaves loose horses behind is a
+  // different thing from a posse that evaporates.
+  unhorse() {
+      if (!this.mounted) return null;
+      this.mounted = false;
+      const h = new Character(this.x - cos(this.aimAngle) * 18,
+                              this.y - sin(this.aimAngle) * 18, false, "HORSE");
+      h.coatCol = this.mountCoat;
+      h.maneCol = this.mountMane;
+      h.sock    = this.mountSock;
+      h.moveAngle = this.aimAngle + random(-1.2, 1.2);
+      h.aimAngle  = h.moveAngle;
+      h.spook(160);
+      enemiesList.push(h);
+      return h;
+  }
+
+  // Send a horse. Also called on every horse within earshot of a gunshot, which
+  // is what makes a firefight scatter the loose stock.
+  spook(t) {
+      if (this.eType !== "HORSE") return;
+      this.boltTimer = Math.max(this.boltTimer || 0, t === undefined ? 120 : t);
+      this.state = "WANDER";
+      this.timer = this.boltTimer + 60;
+      if (this.moveAngle === undefined) this.moveAngle = random(TWO_PI);
+  }
+
       takeDamage(amount) {
     let res = { blocked: false, broken: false };
     if (this.isPlayer && (killcamMode || isWin || inFarmPostCutscene || inFarmCutscene || inTownCutscene || inPostAmbushCutscene || inDarchonCall)) return res; 
@@ -6935,8 +7148,12 @@ this.skeletonTimer = 0;
        // --- NEW: WAKE UP THE TOWN IF A CIVILIAN IS HURT ---
        // --- NEW: WAKE UP THE TOWN IF A CIVILIAN IS HURT ---
     // Make sure Cows are excluded so they don't accidentally turn the town hostile!
-    if (this.isNeutral && this.eType !== "COW") {
+    // Livestock is not a citizen: shooting a cow or a horse does not turn the
+    // town on you, it just scatters the stock.
+    if (this.eType === "HORSE") { this.spook(200); }
+    if (this.isNeutral && this.eType !== "COW" && this.eType !== "HORSE") {
         for (let e of enemiesList) {
+            if (e.eType === "HORSE") { e.spook(140); continue; }
             if (e.isNeutral && e.eType !== "COW") {
                 e.isNeutral = false;
                 e.isFriendly = false; // They are now hostile to the player
@@ -6977,7 +7194,12 @@ this.skeletonTimer = 0;
     } else { 
         this.hp -= amount; 
     }
-    
+
+    // Shot out of the saddle. Checked here rather than at each of the half
+    // dozen places that splice a dead body out of the list, so every way of
+    // killing a rider leaves the same loose horse behind.
+    if (this.mounted && this.hp <= 0) this.unhorse();
+
     return res;
   }
 
@@ -7582,6 +7804,47 @@ this.skeletonTimer = 0;
     // NEW: Freeze the farmer during the cutscene
     if (typeof inFarmCutscene !== 'undefined' && inFarmCutscene && this === farmSpeaker) return;
  
+if (this.eType === "HORSE") {
+        this.forceNudge();
+        if (this.wetTimer === undefined) this.wetTimer = 0;
+        if (this.wetTimer > 0) this.wetTimer--;
+        if (this.boltTimer > 0) this.boltTimer--;
+        this.timer--;
+        let aDx = 0, aDy = 0;
+
+        // Gunfire nearby, or being shot at, sends it. A bolting horse runs flat
+        // out in a straight line for a few seconds, then settles.
+        if (this.hitFlash > 0 && this.boltTimer <= 0) this.spook();
+
+        if (this.timer <= 0 && this.boltTimer <= 0) {
+            if (this.state === "IDLE") {
+                this.state = "WANDER";
+                this.moveAngle = random(TWO_PI);
+                this.timer = floor(random(50, 130));
+            } else {
+                this.state = "IDLE";
+                this.timer = floor(random(150, 420));
+            }
+        }
+
+        const sp = this.boltTimer > 0 ? 4.4 : 0.55;
+        if (this.boltTimer > 0 || this.state === "WANDER") {
+            const m = this.attemptMove(cos(this.moveAngle) * sp, sin(this.moveAngle) * sp);
+            aDx = m.x; aDy = m.y;
+            // Blocked while bolting: pick a new line rather than grinding a wall
+            if (this.boltTimer > 0 && aDx === 0 && aDy === 0) this.moveAngle += random(-1.4, 1.4);
+        }
+
+        if (aDx !== 0 || aDy !== 0) {
+            this.isMoving = true;
+            this.walkCycle += this.boltTimer > 0 ? 0.34 : 0.1;
+            this.aimAngle = this.moveAngle;
+        } else {
+            this.isMoving = false;
+        }
+        return;
+    }
+
 if (this.eType === "COW") {
         this.forceNudge();
         
@@ -7711,7 +7974,13 @@ if (this.eType === "COW") {
     if (this.ignoreBldgTimer > 0) this.ignoreBldgTimer--; 
     if (this.orbChargeTimer > 0) { this.orbChargeTimer--; if (this.orbChargeTimer === 1) { spawnOrb(this.x + cos(this.aimAngle) * 50, this.y + sin(this.aimAngle) * 50); this.fireTimer = 100; } }
 
-    let spd = this.eType === "ARMORED" ? 0.65 : (this.eType === "AERIAL" ? 1.25 : ((this.eType === "AERIAL_PISTOL" || this.eType === "SAUCER" || this.eType === "SAUCER_RED") ? 1.47 : (this.eType === "SNAIL" ? 0.5 : (this.eType === "BUG" || this.eType === "MOLOTOV" || this.eType === "ARMORED_STANDARD" || this.eType === "ALIEN_GATOR" || this.eType === "SNAIL_HYBRID" ? 1.0 : 1.0))));
+    // A man on a horse covers ground. This is the whole of what being mounted
+    // does to the AI -- the state machine, the sight checks and the shooting are
+    // unchanged, he just closes twice as fast, which is what makes a posse
+    // riding in off the flats read as a threat rather than as a slow walk.
+    const mountSpd = this.mounted ? 2.15 : 1;
+    let spd = mountSpd * (this.eType === "ARMORED" ? 0.65 : (this.eType === "AERIAL" ? 1.25 : ((this.eType === "AERIAL_PISTOL" || this.eType === "SAUCER" || this.eType === "SAUCER_RED") ? 1.47 : (this.eType === "SNAIL" ? 0.5 : (this.eType === "BUG" || this.eType === "MOLOTOV" || this.eType === "ARMORED_STANDARD" || this.eType === "ALIEN_GATOR" || this.eType === "SNAIL_HYBRID" ? 1.0 : 1.0)))));
+    if (this.mounted) this.mountWalk = (this.mountWalk || 0) + (this.isMoving ? 0.3 : 0.02);
     let aDx = 0, aDy = 0;
     
     if (this.eType === "AERIAL" || this.eType === "AERIAL_PISTOL" || this.eType === "SAUCER" || this.eType === "SAUCER_RED") { emit(this.x, this.y, 1, color(0, 200, 255), "THRUST", -cos(this.aimAngle) * 5, -sin(this.aimAngle) * 5); emit(this.x, this.y, 1, color(255, 100, 0), "THRUST", -cos(this.aimAngle) * 5, -sin(this.aimAngle) * 5); }
@@ -7885,6 +8154,44 @@ if (this.eType === "COW") {
     }
 
     if (this.state === "PATROL") { 
+        // A checkpoint garrison walks the arterial to the next post and back
+        // rather than circling the nearest wall. Two waypoints and a leg flag:
+        // the road between two outposts is the patrol, and that is the whole
+        // structure the sector needed.
+        if (this.routeA && this.routeB) {
+            // Along the arterials, not across the blocks. Both posts sit on a
+            // chunk corner and the city's carriageways run down the chunk
+            // boundaries, so a route made of one horizontal leg and one vertical
+            // leg is a route made entirely of streets. Sent straight at the next
+            // post they simply walked into the side of a block and stopped --
+            // three of four never moved at all.
+            const dst = this.routeLeg ? this.routeA : this.routeB;
+            const src = this.routeLeg ? this.routeB : this.routeA;
+            let t;
+            if (Math.abs(this.y - src.y) > 130)      t = { x: this.x, y: src.y };   // back onto the arterial
+            else if (Math.abs(this.x - dst.x) > 130) t = { x: dst.x, y: src.y };    // run it to the turn
+            else                                     t = dst;                       // in down the cross street
+            this.aimAngle = atan2(t.y - this.y, t.x - this.x);
+            const vx = cos(this.aimAngle) * 1.25 * spd, vy = sin(this.aimAngle) * 1.25 * spd;
+            const m = this.attemptMove(vx, vy); aDx = m.x; aDy = m.y;
+            if (dist(this.x, this.y, dst.x, dst.y) < 220) { this.routeLeg = this.routeLeg ? 0 : 1; this.routeStuck = 0; }
+            // Walked into something and stopped: step off the line so the squad
+            // filters round a corner instead of piling into it. Wedged for long
+            // enough and it turns around rather than standing there for good.
+            if (aDx === 0 && aDy === 0) {
+                const side = (this.slideDir || 1);
+                const m2 = this.attemptMove(cos(this.aimAngle + side * HALF_PI) * 1.25 * spd,
+                                            sin(this.aimAngle + side * HALF_PI) * 1.25 * spd);
+                aDx = m2.x; aDy = m2.y;
+                if (aDx === 0 && aDy === 0) this.slideDir = -side;
+                this.routeStuck = (this.routeStuck || 0) + 1;
+                if (this.routeStuck > 150) { this.routeLeg = this.routeLeg ? 0 : 1; this.routeStuck = 0; }
+            } else this.routeStuck = 0;
+            if (aDx !== 0 || aDy !== 0) { this.isMoving = true; this.walkCycle += 0.2; this.moveAngle = atan2(aDy, aDx); }
+            else this.isMoving = false;
+            this.armDrag = lerp(this.armDrag, this.isMoving ? 1 : 0, 0.15);
+            return;
+        }
         this.patrolTimer--; if (this.patrolTimer <= 0 || !this.targetBuilding) { this.targetBuilding = getPatrolBuilding(); this.patrolTimer = 360; this.patrolCorner = floor(random(4)); }
         if (this.targetBuilding) {
             let b = this.targetBuilding, c = [{ x: b.x - b.w / 2 - 40, y: b.y - b.h / 2 - 40 }, { x: b.x + b.w / 2 + 40, y: b.y - b.h / 2 - 40 }, { x: b.x + b.w / 2 + 40, y: b.y + b.h / 2 + 40 }, { x: b.x - b.w / 2 - 40, y: b.y + b.h / 2 + 40 }];
@@ -8254,6 +8561,19 @@ if (this.stunTimer > 0 && this.skeletonTimer <= 0) {
     if (this.eType === "BUG") { rotate(this.aimAngle); fill(70, 90, 50); ellipse(0, 0, this.bodyW, this.bodyH); fill(30); ellipse(8, 0, 10, 10); stroke(30); strokeWeight(2); line(-5, 0, -12, 12 + sin(frameCount * 0.5) * 5); line(-5, 0, -12, -12 - sin(frameCount * 0.5) * 5); line(5, 0, 12, 12 + cos(frameCount * 0.5) * 5); line(5, 0, 12, -12 - cos(frameCount * 0.5) * 5); noStroke(); for (let d of this.decals) { if (d.col) fill(d.col[0], d.col[1], d.col[2], d.col[3]); else fill(200, 230, 40, 220); ellipse(d.x, d.y, d.sz, d.sz); } pop(); return; }
     if (this.eType === "SNAIL") { rotate(this.aimAngle); fill(20, 100, 20); ellipse(0, 0, this.bodyW + 10 + sin(frameCount*0.1)*5, this.bodyH); fill(50, 80, 40); ellipse(-5, 0, 24, 20); fill(30, 60, 20); ellipse(-5, 0, 16, 12); fill(30); ellipse(this.bodyW/2, -6, 8, 8); ellipse(this.bodyW/2, 6, 8, 8); stroke(20, 100, 20); strokeWeight(2); line(10, -4, this.bodyW/2, -6); line(10, 4, this.bodyW/2, 6); noStroke(); for (let d of this.decals) { if (d.col) fill(d.col[0], d.col[1], d.col[2], d.col[3]); else fill(20, 100, 20, 220); ellipse(d.x, d.y, d.sz, d.sz); } pop(); return; }
     // --- NEW: RENDER COW MODEL ---
+    if (this.eType === "HORSE") {
+        // A horse carrying somebody is drawn by its rider, so the rider always
+        // lands on top of it whatever order the two happen to sit in the list.
+        if (this.rider && this.rider.hp > 0 && !this.rider.dead) { pop(); return; }
+        push(); rotate(this.aimAngle);
+        if (this.hitFlash > 0) this.hitFlash--;
+        drawHorseArt(this.coatCol, this.maneCol, this.walkCycle, this.isMoving,
+                     this.boltTimer > 0, this.sock);
+        pop();
+        pop();
+        return;
+    }
+
     if (this.eType === "COW") {
         push(); rotate(this.aimAngle);
         
@@ -8321,7 +8641,26 @@ if (this.stunTimer > 0 && this.skeletonTimer <= 0) {
         pop(); pop(); return; 
     }
 
+    // A rider draws his own mount, under himself and before anything else he
+    // wears. Doing it here rather than from the horse guarantees the order --
+    // the man is always on top of the animal, whatever order the two sit in
+    // enemiesList -- and it means one horse can never be drawn twice.
+    if (this.mounted) {
+        push();
+        rotate(this.moveAngle !== undefined && this.isMoving ? this.moveAngle : this.aimAngle);
+        // Drawn up a quarter. A horse is bigger than the man on it and the rider
+        // art is fixed, so this is where the size relationship gets set -- at
+        // parity the rider covered the whole barrel and it read as a man wearing
+        // a horse.
+        scale(1.26);
+        drawHorseArt(this.mountCoat, this.mountMane, this.mountWalk || 0,
+                     this.isMoving, true, this.mountSock);
+        drawHorseTack();
+        pop();
+    }
+
     let lS = this.isMoving ? sin(this.walkCycle) * 12 : 0, bob = this.isMoving ? abs(sin(this.walkCycle)) * 2 : 0;
+    if (this.mounted) { lS *= 0.35; bob *= 0.4; }
     if (this.eType === "AERIAL" || this.eType === "AERIAL_PISTOL") { bob += sin(frameCount * 0.1) * 15; lS = 0; }
     if (this.reloadTimer > 0) { let rP = 1 - (this.reloadTimer / 90); push(); noFill(); stroke(0, 200, 255, 150); strokeWeight(4); arc(0, 0, 50, 50, -PI / 2, -PI / 2 + (rP * TWO_PI)); pop(); bob += sin(frameCount * 0.5) * 3; }
     if (this.eType === "ALIEN_GATOR") { 
@@ -8454,6 +8793,18 @@ if (this.isPlayer) {
     }
 
     // --- DRY GULCH ATTIRE ---------------------------------------------
+    if (this.eType === "BANDIT") {
+        // Long duster over the shoulders, gunbelt, and a second holster. Same
+        // cut as a drover's rig, darker and with more of it.
+        fill(this.vestCol || color(58, 48, 44));
+        arc(-4, 0, this.bodyW + 5, this.bodyH + 3, HALF_PI, PI + HALF_PI, CHORD);
+        fill(44, 38, 36);
+        rect(-this.bodyW / 2 + 2, -this.bodyH / 2 + 8, this.bodyW - 4, this.bodyH - 10, 3);
+        fill(58, 42, 30); rect(-this.bodyW / 2 + 2, -3, this.bodyW - 4, 5, 1);
+        fill(188, 160, 84); rect(-1, -3, 4, 5);
+        fill(46, 34, 24); rect(-this.bodyW / 2 + 1, 5, 6, 9, 2);
+        rect(-this.bodyW / 2 + 1, -14, 6, 9, 2);
+    }
     if (this.eType === "COWBOY" || this.eType === "COWGIRL") {
         // Open leather vest over the shirt, laced up the front.
         fill(this.vestCol || color(88, 62, 40));
@@ -8866,6 +9217,20 @@ if (lArmSwing > frontThreshold || lArmSwing < backThreshold) {
         fill(235, 180, 140); ellipse(hX, hY, 11, 11); 
         fill(15); arc(hX, hY, 12, 12, HALF_PI, PI + HALF_PI);
         push(); translate(hX - 5, hY); rotate(radians(this.isMoving ? sin(frameCount * 0.3) * 15 : 0)); ellipse(-6, 0, 12, 6); pop();
+    } else if (this.eType === "BANDIT") {
+        fill(214, 168, 132); ellipse(hX, hY, 11, 11);
+        push(); translate(hX, hY);
+        // Bandana pulled up over the nose, drawn before the hat so the brim
+        // overlaps it the way it would.
+        fill(this.kerchiefCol || color(124, 40, 36));
+        arc(0, 0, 12, 12, -HALF_PI, HALF_PI);
+        const bh = this.hatCol || color(34, 30, 30);
+        fill(red(bh) * 0.7, green(bh) * 0.7, blue(bh) * 0.7); ellipse(0, 0, 27, 25);
+        fill(bh); ellipse(0, 0, 21, 19);
+        fill(red(bh) * 1.5 + 10, green(bh) * 1.5 + 10, blue(bh) * 1.5 + 10);
+        ellipse(-1, 0, 14, 12);
+        fill(96, 26, 24); rect(-7, -1.4, 14, 2.8);
+        pop();
     } else if (this.eType === "COWBOY" || this.eType === "COWGIRL") {
         fill(235, 180, 140); ellipse(hX, hY, 11, 11);
         if (this.eType === "COWGIRL") {
@@ -9198,8 +9563,43 @@ function maintainHostiles() {
   if (typeof TARGET_ENEMY_COUNT === 'undefined') return;
   let hostiles = 0;
   for (let i = 0; i < enemiesList.length; i++) if (!enemiesList[i].isFriendly) hostiles++;
+  maintainBanditPosse(hostiles);
   if (hostiles >= TARGET_ENEMY_COUNT) return;
   spawnSingleEnemy();
+}
+
+// ---------------------------------------------------------------------------
+// BANDIT ENCOUNTERS
+// The frontier's overworld beat. Lone riders come out of the ordinary spawner;
+// this is the other thing that happens out there -- a posse comes over the rise
+// together, at speed, from one side. Rare enough to be an event, close enough
+// to be unavoidable, and always mounted, because the point of a posse is that
+// you cannot simply walk away from it.
+let banditPosseTimer = 0;
+function maintainBanditPosse(hostiles) {
+  if (currentLevel !== 3 || !inBiomeOverworld()) { banditPosseTimer = 0; return; }
+  if (banditPosseTimer > 0) { banditPosseTimer--; return; }
+  if (hostiles > TARGET_ENEMY_COUNT * 0.6) return;
+  // ~35 to 70 seconds between encounters, counted in 45-frame ticks.
+  banditPosseTimer = floor(random(46, 94));
+  const n = floor(random(2, 5));
+  const a = random(TWO_PI), r = 1500 + random(400);
+  const ox = player.x + cos(a) * r, oy = player.y + sin(a) * r;
+  for (let i = 0; i < n; i++) {
+    const sx = ox + cos(a + HALF_PI) * (i - (n - 1) / 2) * 90;
+    const sy = oy + sin(a + HALF_PI) * (i - (n - 1) / 2) * 90;
+    if (inAuthoredSector(sx, sy, 500)) continue;
+    const b = new Character(sx, sy, false, "BANDIT");
+    b.mountUp();
+    b.state = "CHASE";
+    b.loseSightTimer = 3500;
+    b.lastKnownX = player.x; b.lastKnownY = player.y;
+    enemiesList.push(b);
+  }
+  // Anything with hooves in earshot leaves.
+  for (const e of enemiesList) if (e.eType === "HORSE" && !e.rider) {
+    if (dist(e.x, e.y, ox, oy) < 900) e.spook(150);
+  }
 }
 
 // --- BUG AMBUSH KEEPALIVE ---
@@ -12377,6 +12777,29 @@ function frontierTrailX(biome, cx, wy) {
 }
 function jungleTrailX(biome, cx, wy)   { return trailCentreX(biome, cx, wy, 3300, 520, 260); }
 
+// A city chunk carries a Directive checkpoint where the control field runs
+// high. Streets run along the chunk edges -- a block occupies ox+120..ox+1080 --
+// so the crossing at (ox, oy) is a road junction 240 wide, and a roadblock
+// across a junction is what a checkpoint IS. Nothing has to move out of the way
+// for it.
+function cityIsCheckpoint(biome, cx, cy) {
+  return bnoise(biome, cx * 4096 + 7717, cy * 4096 + 3131, 0.31) > 0.62;
+}
+// The next checkpoint over, for the patrol that walks between them. Searched
+// outward so a post always pairs with its nearest neighbour, and deterministic,
+// so both ends of a route agree on the route.
+function nextCheckpoint(biome, cx, cy) {
+  for (let ring = 1; ring <= 4; ring++) {
+    for (let j = cy - ring; j <= cy + ring; j++) {
+      for (let i = cx - ring; i <= cx + ring; i++) {
+        if (Math.max(Math.abs(i - cx), Math.abs(j - cy)) !== ring) continue;
+        if (cityIsCheckpoint(biome, i, j)) return { x: i * CHUNK_W, y: j * CHUNK_W };
+      }
+    }
+  }
+  return null;
+}
+
 // A frontier chunk grows a town where the settlement field runs high. Both the
 // generator and the terrain bake ask this, so the main street is painted under
 // the storefronts that line it.
@@ -12721,6 +13144,24 @@ function generateChunkContent(biome, cx, cy) {
         for (let sy of [oy + 115, oy + 1085]) {
           solid.push({ x: sx, y: sy, w: 16, h: 16, isStreetLight: true });
         }
+      }
+
+      // --- Directive checkpoint ------------------------------------------
+      // Built from the same props the border anchors use, so it reads as the
+      // same organisation without any new art. Barrier across the junction,
+      // guard boxes on the near corners, sandbags on the approaches, blast
+      // walls turning the crossing into a funnel.
+      if (cityIsCheckpoint(biome, cx, cy) && !nearAnchor(ox, oy, 900)) {
+        const P = (x, y, w, h, t) =>
+          solid.push({ x, y, w, h, isBiomeProp: true, propType: t });
+        P(ox, oy - 150, 300, 70, "CHECKPOINT");
+        P(ox, oy + 150, 300, 70, "CHECKPOINT");
+        P(ox - 190, oy - 190, 150, 55, "GUARDBOX");
+        P(ox + 190, oy + 190, 150, 55, "GUARDBOX");
+        P(ox - 210, oy + 130, 60, 60, "SANDBAG");
+        P(ox + 210, oy - 130, 60, 60, "SANDBAG");
+        P(ox - 330, oy - 330, 36, 150, "BLASTWALL");
+        P(ox + 330, oy + 330, 36, 150, "BLASTWALL");
       }
       break;
     }
@@ -14127,6 +14568,10 @@ function settlementRoster(biome, cx, cy, solids) {
             ox + 200, ox + CHUNK_W - 200, my - 150, my + 150);
         if (rng() > 0.55) add(["FARMER_MALE", "FARMER_FEMALE"], rngInt(rng, 1, 3),
             ox + 150, ox + CHUNK_W - 150, my - 380, my + 380);
+        // Saddle stock stood off the street, the way it would be outside a
+        // livery. Loose, so a firefight scatters it.
+        add(["HORSE"], rngInt(rng, 2, 5),
+            ox + 150, ox + CHUNK_W - 150, my - 420, my - 220);
       } else if (bnoise(biome, ox, oy, 0.0004) < 0.36) {
         // Farmland. Find the field the generator actually planted rather than
         // assuming where it is -- it is placed beside the wagon track now, not
@@ -14139,7 +14584,29 @@ function settlementRoster(biome, cx, cy, solids) {
           add(["COW"], rngInt(rng, 3, 7),
               field.x - field.w / 2, field.x + field.w / 2,
               field.y - 300, field.y + 300);
+          add(["HORSE"], rngInt(rng, 1, 3),
+              field.x - field.w / 2, field.x + field.w / 2,
+              field.y - 360, field.y + 360);
         }
+      }
+      break;
+    }
+
+    case "CITY":
+    case "CITY_DENSE": {
+      // A checkpoint is manned, and its garrison walks the arterial to the next
+      // one. Hostile, so they count against the wanderer budget the same way the
+      // loose patrols do -- clear a post and the sector gets quieter until you
+      // leave and come back.
+      if (!cityIsCheckpoint(biome, cx, cy)) break;
+      const route = nextCheckpoint(biome, cx, cy);
+      const n = rngInt(rng, 3, 7);
+      for (let i = 0; i < n; i++) {
+        const pt = popPlace(rng, solids, ox - 260, ox + 260, oy - 260, oy + 260);
+        if (!pt) continue;
+        out.push({ type: rng() > 0.7 ? "ARMORED_STANDARD" : "NORMAL",
+                   x: pt.x, y: pt.y,
+                   route: route, home: { x: ox, y: oy } });
       }
       break;
     }
@@ -14236,7 +14703,8 @@ function refreshPopulation(mgr, pcx, pcy) {
           if (live + list.length >= POP_BUDGET) break;
           const r = roster[n];
           const c = new Character(r.x, r.y, false, r.type);
-          if (c.eType !== "COW") c.state = "PATROL";
+          if (c.eType !== "COW" && c.eType !== "HORSE") c.state = "PATROL";
+          if (r.route) { c.routeA = r.home; c.routeB = r.route; c.routeLeg = 0; }
           enemiesList.push(c);
           list.push(c);
         }
@@ -15173,8 +15641,13 @@ function drawBiomeProps() {
         const scan = (frameCount % 120) / 120;
         fill(70, 210, 255, 150);
         rect(-b.w / 2 + scan * b.w, -b.h / 2 - 30, 10, 22);
-        fill(220, 220, 210); textAlign(CENTER, CENTER); textSize(16); textFont('sans-serif');
-        text("GOVERNMENT DIRECTIVE — CHECKPOINT " + currentBiome, 0, -b.h / 2 - 50);
+        // The banner names the sector's border post. A city roadblock is a
+        // roadblock -- there are dozens of them and they do not each get a
+        // headline.
+        if (b.isAnchor) {
+          fill(220, 220, 210); textAlign(CENTER, CENTER); textSize(16); textFont('sans-serif');
+          text("GOVERNMENT DIRECTIVE — CHECKPOINT " + currentBiome, 0, -b.h / 2 - 50);
+        }
         pop();
         break;
       }
