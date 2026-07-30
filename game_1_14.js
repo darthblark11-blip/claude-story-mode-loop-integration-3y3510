@@ -4784,9 +4784,14 @@ function spawnSingleEnemy() {
   // Do not spawn random hostiles if the town is liberated, ambush is active, or in specific story scenes!
  
   if (currentLevel === 0 || nm0AmbushActive || window.towersDefeated) return;
-  // The Anveda farm is a neutral scene while its story arc runs — no random
-  // hostiles among the farmers. Once the sector opens up it populates normally.
-  if (currentLevel === 3 && isStoryMode && !isBiomeLevel(3)) return;
+  // The Anveda farm and Dry Gulch are a neutral scene while the story arc runs
+  // -- no random hostiles among the farmers. This used to gate the whole level,
+  // which is why walking out of the first town led to an empty world: the towns
+  // past it were unpopulated AND the country between them had nothing in it
+  // either. It is a proximity test now, so the sector stays peaceful and the
+  // open country beyond it is open country.
+  if (currentLevel === 3 && isStoryMode && !isBiomeLevel(3) &&
+      inAuthoredSector(player ? player.x : 0, player ? player.y : 0, 900)) return;
 
   let baseEnemyCount = 0;
   let armoredCount = 0, bugCount = 0, molotovCount = 0, saucerCount = 0;
@@ -9064,12 +9069,28 @@ function updateEntities() {
   if (comboTimer > 0) { comboTimer--; if (comboTimer <= 0) consecutiveKills = 0; }
 
   if (doTick) {
-      let actors = [player].concat(enemiesList.filter(e => e && e.hp > 0 && !e.dead && e.eType !== "AERIAL" && e.eType !== "AERIAL_PISTOL" && e.eType !== "SAUCER" && e.eType !== "SAUCER_RED"));
+      // Body-to-body separation only matters where somebody can see it, and
+      // with settlements streaming in there are now up to a hundred residents
+      // alive at once. Anything past this radius is off screen and outside the
+      // AI cull as well, so it is not moving and cannot be overlapping anything
+      // it was not already overlapping.
+      const PUSH_R = 1800, PUSH_R2 = PUSH_R * PUSH_R;
+      let actors = [player];
+      for (let n = 0; n < enemiesList.length; n++) {
+          const e = enemiesList[n];
+          if (!e || e.hp <= 0 || e.dead) continue;
+          if (e.eType === "AERIAL" || e.eType === "AERIAL_PISTOL" ||
+              e.eType === "SAUCER" || e.eType === "SAUCER_RED") continue;
+          const dx0 = e.x - player.x, dy0 = e.y - player.y;
+          if (dx0 * dx0 + dy0 * dy0 > PUSH_R2) continue;
+          actors.push(e);
+      }
+      // Cache each actor's slot. The pair test used to be two linear
+      // actors.indexOf() calls inside a triple-nested loop -- O(n) work per
+      // candidate pair, which is fine at a dozen actors and quadratic misery at
+      // a hundred.
+      for (let n = 0; n < actors.length; n++) actors[n]._pushIdx = n;
 
-      
-
-
-      
       spatialGrid = {};
       for (let a of actors) {
           let key = getSpatialKey(a.x, a.y);
@@ -9089,10 +9110,10 @@ function updateEntities() {
               for (let oy = -1; oy <= 1; oy++) {
                   let neighborKey = (cx + ox) + "," + (cy + oy);
                   let neighbors = spatialGrid[neighborKey];
-                  
+
                   if (neighbors) {
                       for (let B of neighbors) {
-                          if (A === B || actors.indexOf(A) >= actors.indexOf(B)) continue;
+                          if (A === B || A._pushIdx >= B._pushIdx) continue;
                           if (player && player.dashTimer > 0 && B.isPlayer) continue;
                           if (B.ignoreBldgTimer > 0) continue;
 
@@ -9163,6 +9184,22 @@ function updateEntities() {
 
   checkAmbushCleared();
   checkFarmSwarmAlive();
+  maintainHostiles();
+}
+
+// The wilderness half of the loop. spawnSingleEnemy() is otherwise only called
+// off a kill, so a sector the player entered with nothing hostile in it -- which
+// is exactly what leaving a peaceful settlement looks like -- had no way to fill
+// up again. Ticked slowly and one at a time, so crossing the line out of a town
+// reads as the country getting dangerous rather than as an ambush.
+function maintainHostiles() {
+  if (!doTick || isDead || isWin || killcamMode || isPaused) return;
+  if (frameCount % 45 !== 0) return;
+  if (typeof TARGET_ENEMY_COUNT === 'undefined') return;
+  let hostiles = 0;
+  for (let i = 0; i < enemiesList.length; i++) if (!enemiesList[i].isFriendly) hostiles++;
+  if (hostiles >= TARGET_ENEMY_COUNT) return;
+  spawnSingleEnemy();
 }
 
 // --- BUG AMBUSH KEEPALIVE ---
@@ -12168,6 +12205,16 @@ function adoptLateAuthoredSolids() {
   }
 }
 
+// Is a point inside the hand-authored map's footprint? Used to keep random
+// hostiles out of a settlement whose story arc is still running -- the Anveda
+// farm and Dry Gulch are a neutral scene, the country past them is not.
+function inAuthoredSector(x, y, pad) {
+  if (!authoredCore) return false;
+  const p = pad || 0;
+  return x > authoredCore.x0 - p && x < authoredCore.x1 + p &&
+         y > authoredCore.y0 - p && y < authoredCore.y1 + p;
+}
+
 function hitsAuthored(x, y, w, h, pad) {
   if (!authoredMask) return false;
   const x0 = x - w / 2 - pad, x1 = x + w / 2 + pad;
@@ -13965,6 +14012,243 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
 }
 
 // ###########################################################################
+//  SETTLEMENT POPULATION
+//  The streamer has always built towns and left them empty. Walk out of Dry
+//  Gulch and every settlement past it is a film set: storefronts, boardwalks,
+//  corrals, nobody. This puts residents in them, on the same terms as the
+//  terrain -- streamed in around the player, budgeted, and let go behind him.
+//
+//  Three rules make it behave:
+//
+//  DETERMINISTIC. A settlement's roster comes from the chunk hash, so the same
+//  town has the same people in the same trades every time you walk back into
+//  it. Nothing is stored to get that.
+//
+//  BUDGETED. One global cap on live streamed residents, spawned a few per
+//  frame and nearest settlement first, so arriving at a town never spikes the
+//  frame. Residents are neutral and neutrals are `isFriendly`, which the
+//  hostile respawner already skips when it counts the map, so the wilderness
+//  threat level is unaffected by how many townsfolk are standing around.
+//
+//  CONSEQUENTIAL. When a settlement is released, how many of its people died
+//  there is added to a running tally against its chunk, and a return visit
+//  spawns the roster minus that tally. Shoot up a town and it stays shot up.
+//  Losses rather than survivors on purpose: a settlement that came up short
+//  because the budget was tight has not lost anybody, and must not be recorded
+//  as though it had.
+// ###########################################################################
+const POP_LOAD_R  = 2;     // chunks: populate a settlement once the player is this close
+const POP_KEEP_R  = 4;     // chunks: hold it until he is past here
+const POP_BUDGET  = 84;    // live streamed residents, whole world
+const POP_PER_TICK = 5;    // spawns per frame
+const POP_HOLD_R  = 1600;  // never release anyone still this close to the player
+const POP_HISTORY_MAX = 400;
+
+let chunkPop   = new Map();   // "cx,cy" -> [Character]
+let popLosses  = new Map();   // "cx,cy" -> how many of its people have died there
+
+function resetPopulation() {
+  chunkPop.clear();
+  popLosses.clear();
+}
+
+// Hand a settlement back: pull its people out of the world and bank whatever it
+// lost while the player was there.
+function popRelease(k, list) {
+  let alive = 0;
+  for (const e of list) {
+    const idx = enemiesList.indexOf(e);
+    if (e.hp > 0 && !e.dead) alive++;
+    if (idx > -1) enemiesList.splice(idx, 1);
+  }
+  const lost = list.length - alive;
+  if (lost > 0) popLosses.set(k, (popLosses.get(k) || 0) + lost);
+  chunkPop.delete(k);
+  return list.length;
+}
+
+// Nobody in this settlement is close enough to the player to be mid-fight.
+function popReleasable(list) {
+  for (const e of list) {
+    if (e.hp <= 0 || e.dead) continue;
+    const dx = e.x - player.x, dy = e.y - player.y;
+    if (dx * dx + dy * dy < POP_HOLD_R * POP_HOLD_R) return false;
+  }
+  return true;
+}
+
+// Rejection sampler against the chunk's own solids. A resident standing inside
+// a wall is worse than one missing, so a failed placement is simply dropped.
+function popPlace(rng, solids, x0, x1, y0, y1) {
+  for (let a = 0; a < 20; a++) {
+    const x = x0 + rng() * (x1 - x0), y = y0 + rng() * (y1 - y0);
+    let hit = false;
+    for (let i = 0; i < solids.length; i++) {
+      const s = solids[i];
+      if (s.isCropField || s.isPond || s.isGrassLot) continue;   // walkable surfaces
+      if (Math.abs(x - s.x) < (s.w || 0) / 2 + 28 &&
+          Math.abs(y - s.y) < (s.h || 0) / 2 + 28) { hit = true; break; }
+    }
+    if (!hit) return { x, y };
+  }
+  return null;
+}
+
+// What lives here, if anything. Keyed off the same fields the generator used to
+// decide there was a settlement at all, so the roster and the buildings always
+// agree about whether this chunk is a town.
+function settlementRoster(biome, cx, cy, solids) {
+  const def = BIOMES[biome];
+  if (!def) return null;
+  const ox = cx * CHUNK_W, oy = cy * CHUNK_W;
+  const rng = makeRng(chunkHash(biome, cx, cy, 4177));
+  const out = [];
+  const add = (types, n, x0, x1, y0, y1) => {
+    for (let i = 0; i < n; i++) {
+      const p = popPlace(rng, solids, x0, x1, y0, y1);
+      if (p) out.push({ type: types[(rng() * types.length) | 0], x: p.x, y: p.y });
+    }
+  };
+
+  switch (def.layout) {
+    case "FRONTIER": {
+      if (frontierIsTown(biome, ox, oy)) {
+        // A high street works the way Dry Gulch does: townsfolk on the street
+        // where the shops are, drovers at the ends near the stock, the law on
+        // its own beat.
+        const my = frontierMainStreetY(biome, cy);
+        add(["VILLAGER_MALE", "VILLAGER_FEMALE"], rngInt(rng, 4, 8),
+            ox + 120, ox + CHUNK_W - 120, my - 96, my + 96);
+        add(["COWBOY", "COWGIRL"], rngInt(rng, 2, 5),
+            ox + 120, ox + CHUNK_W / 2, my - 300, my + 300);
+        add(["COWBOY", "COWGIRL"], rngInt(rng, 1, 4),
+            ox + CHUNK_W / 2, ox + CHUNK_W - 120, my - 300, my + 300);
+        add(["LOCAL_COP"], rngInt(rng, 1, 3),
+            ox + 200, ox + CHUNK_W - 200, my - 150, my + 150);
+        if (rng() > 0.55) add(["FARMER_MALE", "FARMER_FEMALE"], rngInt(rng, 1, 3),
+            ox + 150, ox + CHUNK_W - 150, my - 380, my + 380);
+      } else if (bnoise(biome, ox, oy, 0.0004) < 0.36) {
+        // Farmland. Find the field the generator actually planted rather than
+        // assuming where it is -- it is placed beside the wagon track now, not
+        // at the chunk centre.
+        const field = solids.find(s => s.isCropField);
+        if (field) {
+          add(["FARMER_MALE", "FARMER_FEMALE"], rngInt(rng, 2, 5),
+              field.x - field.w / 2 - 40, field.x + field.w / 2 + 40,
+              field.y - field.h / 2, field.y + field.h / 2);
+          add(["COW"], rngInt(rng, 3, 7),
+              field.x - field.w / 2, field.x + field.w / 2,
+              field.y - 300, field.y + 300);
+        }
+      }
+      break;
+    }
+
+    case "JUNGLE": {
+      // A cordon post is manned. Tan Army regulars, neutral until provoked --
+      // the same troops the story arc has you make contact with.
+      if (bnoise(biome, ox, oy, 0.0005) > 0.6) {
+        const bunkers = solids.filter(s => s.propType === "BUNKER");
+        if (bunkers.length) {
+          const b0 = bunkers[0];
+          add(["MILITARY_NEUTRAL"], rngInt(rng, 3, 7),
+              b0.x - 260, b0.x + 260, b0.y - 200, b0.y + 420);
+        }
+      }
+      break;
+    }
+
+    case "TUNDRA": {
+      if (bnoise(biome, ox, oy, 0.0006) > 0.66) {
+        const huts = solids.filter(s => s.isBlockBuilding);
+        if (huts.length) {
+          const h0 = huts[0];
+          add(["MILITARY_NEUTRAL"], rngInt(rng, 2, 5),
+              h0.x - 300, h0.x + 300, h0.y - 300, h0.y + 300);
+        }
+      }
+      break;
+    }
+  }
+  return out.length ? out : null;
+}
+
+// Called once a frame from the chunk manager, after residency. Releases before
+// it spawns, so a settlement walking out of range frees its share of the budget
+// for the one walking in.
+function refreshPopulation(mgr, pcx, pcy) {
+  if (!mgr || !player) return;
+
+  // -- release ------------------------------------------------------------
+  for (const [k, list] of chunkPop) {
+    const c = k.indexOf(",");
+    const i = +k.slice(0, c), j = +k.slice(c + 1);
+    if (Math.max(Math.abs(i - pcx), Math.abs(j - pcy)) <= POP_KEEP_R) continue;
+    // Anyone who followed the player out of his town is not a resident any
+    // more, he is part of the fight. Defer the whole release until he is not.
+    if (!popReleasable(list)) continue;
+    popRelease(k, list);
+  }
+  // Bounded history: the oldest settlements you visited forget they were shot
+  // up, which is better than a Map that grows for the whole session.
+  while (popLosses.size > POP_HISTORY_MAX) {
+    popLosses.delete(popLosses.keys().next().value);
+  }
+
+  // -- make room ----------------------------------------------------------
+  // The keep radius holds a lot of ground, so a settlement four chunks behind
+  // the player can sit on the whole budget and the town he is walking INTO
+  // comes out half empty. When the budget is tight, let the farthest populated
+  // settlement go early. Distance priority, not arrival order: what matters is
+  // who is near enough to be looked at.
+  let live = 0;
+  for (const l of chunkPop.values()) live += l.length;
+  if (live > POP_BUDGET * 0.8) {
+    let far = null, farD = 2;
+    for (const [k, list] of chunkPop) {
+      if (!list.length) continue;
+      const c = k.indexOf(",");
+      const d = Math.max(Math.abs(+k.slice(0, c) - pcx), Math.abs(+k.slice(c + 1) - pcy));
+      if (d > farD) { farD = d; far = k; }
+    }
+    if (far) {
+      const list = chunkPop.get(far);
+      if (popReleasable(list)) live -= popRelease(far, list);
+    }
+  }
+  if (live >= POP_BUDGET) return;
+
+  let spawned = 0;
+  for (let ring = 0; ring <= POP_LOAD_R && spawned < POP_PER_TICK; ring++) {
+    for (let j = pcy - ring; j <= pcy + ring && spawned < POP_PER_TICK; j++) {
+      for (let i = pcx - ring; i <= pcx + ring && spawned < POP_PER_TICK; i++) {
+        if (Math.max(Math.abs(i - pcx), Math.abs(j - pcy)) !== ring) continue;   // ring only
+        const k = ChunkManager.keyOf(i, j);
+        if (chunkPop.has(k)) continue;
+        const ch = mgr.chunks.get(k);
+        if (!ch) continue;
+        const roster = settlementRoster(mgr.biome, i, j, ch.solid);
+        if (!roster) { chunkPop.set(k, []); continue; }
+
+        const cap = Math.max(0, roster.length - (popLosses.get(k) || 0));
+        const list = [];
+        for (let n = 0; n < roster.length && list.length < cap; n++) {
+          if (live + list.length >= POP_BUDGET) break;
+          const r = roster[n];
+          const c = new Character(r.x, r.y, false, r.type);
+          if (c.eType !== "COW") c.state = "PATROL";
+          enemiesList.push(c);
+          list.push(c);
+        }
+        chunkPop.set(k, list);
+        live += list.length;
+        spawned += list.length || 1;
+      }
+    }
+  }
+}
+
+// ###########################################################################
 //  CHUNK MANAGER
 //  Streams chunks around the player, rebuilds the shared `buildings` array
 //  only when the resident set actually changes, and evicts distant graphics
@@ -14018,6 +14302,7 @@ class ChunkManager {
     const { cx, cy } = this.worldToChunk(px, py);
     this.lastKey = ChunkManager.keyOf(cx, cy);
     this.refreshResidency(cx, cy);
+    refreshPopulation(this, cx, cy);
     this.processBakeQueue();
     if (this.dirty) {
       this.rebuildWorldArrays();
@@ -16125,6 +16410,9 @@ function generateMap() {
   authoredCore   = null;
   authoredChunks = null;
   authoredMask   = null;
+  // Residents belong to the world that is being torn down, and their chunk keys
+  // mean nothing in the next one.
+  resetPopulation();
 
   if (!isStreamedLevel(currentLevel)) {
     // Level 0's house and Level 8's HQ interior: closed rooms, no streaming.
@@ -16308,6 +16596,10 @@ function getSafeSpawn(away) {
     const rx = cx2 + Math.cos(a) * r;
     const ry = cy2 + Math.sin(a) * r;
     if (!insideSector(rx, ry)) continue;
+    // Never drop a random hostile into a settlement whose story arc is still
+    // running, even when the player is standing just outside it.
+    if (away && isStoryMode && hasAuthoredCore(currentLevel) && !storyArcCleared(currentLevel) &&
+        inAuthoredSector(rx, ry, 500)) continue;
 
     let hit = false;
     for (const b of buildings) {
