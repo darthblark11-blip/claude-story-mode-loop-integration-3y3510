@@ -115,6 +115,17 @@ Son of a S.I.A (Stick Intelligence Agent).`;
 let viewLeft = 0, viewRight = 0, viewTop = 0, viewBottom = 0;
 let MAX_KILLS = 999; 
 const TARGET_ENEMY_COUNT = 80; 
+// --- ROBOT ---------------------------------------------------------------
+const ROBOT_HEAD_HP    = 150;   // sensor housing, separate from the 350 chassis
+const ROBOT_CHARGE     = 120;   // two seconds to wind the cannon up
+const ROBOT_BEAM_DMG   = 40;
+const ROBOT_BURST      = 2;     // shots per charge
+const ROBOT_BURST_GAP  = 9;     // frames between the two
+const ROBOT_COOLDOWN   = 46;    // before it may start winding up again
+const ROBOT_FUSE       = 198;   // 3.3 seconds from head loss to detonation
+const ROBOT_OIL_AT     = 100;   // chassis HP at which it starts leaking
+const OIL_COL          = [18, 16, 15];
+const SPARK_COL        = [255, 214, 140];
 let playerRespawnTimer = 0, prevGamepadButtons = [];
 let headshotCounter = 0, bodyOverkillCounter = 0, lightningCounter = 0; 
 
@@ -4937,16 +4948,24 @@ function triggerGateAmbush(fortressY, isNorthGate = false) {
 //  5 to 8 keep their existing tables until they are worked on.
 // ###########################################################################
 const OVERWORLD = {
-  // One regular per sector. Stick City is the yellow pistol men; the Undercity
-  // is the women, and only the women -- no armour, no incendiaries, nothing but
-  // the sector's own people. That is deliberate: the Undercity's garrison is
-  // the population you are about to inherit, and a sector you are meant to
-  // liberate should not be salted with units that cannot defect.
-  1: [["NORMAL", 60], ["ARMORED_STANDARD", 26], ["MOLOTOV", 8], ["ARMORED", 6]],
-  2: [["FEMALE_PISTOL", 100]],
+  // NM-0 holds the open road in both city sectors with machines, not people.
+  // The pistol regulars are the sector's POPULATION -- they garrison it, and on
+  // the savior route they become the citizens you inherit -- so having them
+  // respawn forever on the overworld was working against the thing the sector
+  // is for. Robots do not defect and nobody mourns them.
+  1: [["ROBOT", 100]],
+  2: [["ROBOT", 100]],
   3: [["BANDIT", 100]],
   4: [["NM0_GREY_FATIGUE", 68], ["ARMORED_STANDARD", 22], ["ARMORED", 10]]
 };
+// What each sector's own army is, as distinct from what its open road spawns.
+// A garrison unit is left alone by the whitelist sweep wherever it is standing;
+// it simply never spawns as a wanderer.
+const SECTOR_GARRISON = {
+  1: ["NORMAL", "MOLOTOV", "ARMORED_STANDARD", "ARMORED"],
+  2: ["FEMALE_PISTOL", "ARMORED_STANDARD", "ARMORED"]
+};
+
 // The set that is allowed to exist in each biome's outer region, precomputed.
 // A table is a whitelist, not a preference: anything not in it is not native to
 // the sector and has no business wandering it.
@@ -5010,6 +5029,15 @@ function nativeToOverworld(e) {
   // isAmbush marks a scripted spawn placed at fixed map coordinates. The
   // distance cull already refuses to touch them and neither does this.
   if (e.isAmbush || e.routeA || e.isMilitary || e.bandGroup) return true;
+  // The sector's own forces are never foreign to it. This is deliberately NOT
+  // the same list as the overworld table: the table says what may SPAWN on the
+  // open road, this says what is allowed to exist in the sector at all. Stick
+  // City's pistol men garrison Stick City and are never swept out of it -- but
+  // they are just as foreign to the frontier as they ever were, which is the
+  // whole complaint that started this, so the exemption is scoped by sector and
+  // not global.
+  const gar = SECTOR_GARRISON[currentLevel];
+  if (gar && gar.indexOf(e.eType) !== -1) return true;
   return set.has(e.eType);
 }
 
@@ -6767,6 +6795,50 @@ class Corpse {
   }
   if (this.eT === "BUG") { r.push(); r.translate(this.x, this.y); r.rotate(this.aA); r.fill(50, 80, 40); r.ellipse(0, 0, 20, 14); r.fill(30); r.ellipse(8, 0, 10, 10); r.stroke(30); r.strokeWeight(2); r.line(-5, 0, -12, 12); r.line(-5, 0, -12, -12); r.line(5, 0, 12, 12); r.line(5, 0, 12, -12); r.noStroke(); for (let d of this.dec) { if (d.col) r.fill(d.col[0], d.col[1], d.col[2], d.col[3]); else r.fill(200, 230, 40, 220); r.ellipse(d.x, d.y, d.sz, d.sz); } r.pop(); return; }
   if (this.eT === "SNAIL") { r.push(); r.translate(this.x, this.y); r.rotate(this.aA); r.fill(20, 100, 20); r.ellipse(0, 0, this.bW, this.bH); r.fill(50, 80, 40); r.ellipse(-5, 0, 24, 20); r.noStroke(); for (let d of this.dec) { if (d.col) r.fill(d.col[0], d.col[1], d.col[2], d.col[3]); else r.fill(50, 200, 50, 220); r.ellipse(d.x, d.y, d.sz, d.sz); } r.pop(); return; }
+if (this.eT === "ROBOT") {
+      r.push(); r.translate(this.x, this.y); r.rotate(this.aA);
+      r.noStroke();
+      // Oil that has run out and settled, under everything else.
+      r.fill(14, 13, 12, 150); r.ellipse(-4, 5, 34, 24);
+      r.fill(10, 9, 9, 190);   r.ellipse(-2, 3, 21, 15);
+      // Struts thrown out from the fall.
+      r.fill(48, 52, 58);
+      r.rect(-14, -19, 14, 8, 2); r.rect(-16, 12, 15, 8, 2);
+      // The wedge, on its side and folded in on itself.
+      r.fill(78, 84, 92);
+      r.beginShape();
+      r.vertex(16, 3); r.vertex(2, -14); r.vertex(-13, -9); r.vertex(-12, 12); r.vertex(3, 15);
+      r.endShape(r.CLOSE);
+      r.fill(58, 63, 70);
+      r.beginShape();
+      r.vertex(11, 2); r.vertex(1, -9); r.vertex(-8, -6); r.vertex(-7, 8); r.vertex(2, 10);
+      r.endShape(r.CLOSE);
+      // Cannon arm, still attached, muzzle dark.
+      r.fill(70, 76, 84); r.rect(6, 11, 19, 7, 2);
+      r.fill(40, 44, 49); r.rect(22, 10.5, 7, 8, 2);
+      // Head: torn off entirely if it went out enraged, otherwise dark and
+      // cracked where it lies.
+      if (this.dT === 1) {
+          r.fill(30, 27, 25); r.ellipse(6, -2, 9, 8);
+          r.stroke(110, 116, 124); r.strokeWeight(1.1);
+          r.line(4, -5, 1, -9); r.line(9, 1, 12, 5); r.noStroke();
+      } else {
+          r.fill(62, 67, 74); r.ellipse(9, -3, 13, 12);
+          r.fill(22, 24, 27); r.ellipse(11, -3, 8, 7);
+          r.stroke(26, 28, 31); r.strokeWeight(1.2); r.line(5, -8, 13, 2); r.noStroke();
+      }
+      // Bullet holes travel with the wreck.
+      for (let d of this.dec) {
+          r.fill(d.col ? d.col[0] : 16, d.col ? d.col[1] : 15, d.col ? d.col[2] : 14, d.col ? d.col[3] : 220);
+          r.ellipse(d.x, d.y, d.sz, d.sz);
+      }
+      r.pop();
+      // It keeps venting where it lies -- a thin wisp and the odd spark, never
+      // enough to be a fire.
+      if (frameCount % 22 === 0) emit(this.x + random(-7, 7), this.y + random(-7, 7), 1, color(62, 62, 62), "SMOKE");
+      if (frameCount % 47 === 0) emit(this.x + random(-6, 6), this.y + random(-6, 6), 1, color(SPARK_COL[0], SPARK_COL[1], SPARK_COL[2]), "FLECK");
+      return;
+  }
 if (this.eT === "COW" || this.eT === "HORSE") {
       r.push(); r.translate(this.x, this.y); r.rotate(this.aA);
       
@@ -7153,6 +7225,35 @@ this.punchHitCount = 0;
     if (eT === "ALIEN_GATOR") { this.hp = 250; this.bodyW = 63; this.bodyH = 81; this.shirtCol = color(120); this.pantsCol = color(20, 100, 20); }
     if (eT === "SAUCER" || eT === "SAUCER_RED") { this.hp = 750; this.bodyW = 80; this.bodyH = 80; if (eT === "SAUCER_RED") { this.burstsFired = 0; this.burstCooldown = 0; this.strafeDir = random() > 0.5 ? 1 : -1; } }
     if (eT === "SNAIL_HYBRID") { this.hp = 500; this.bodyW = 63; this.bodyH = 81; this.shirtCol = color(173, 216, 230); this.pantsCol = color(100, 150, 200); this.hybridHeadHP = 100; this.leftEye = 1; this.rightEye = 1; this.enraged = false; this.eyeBleedL = 0; this.eyeBleedR = 0; this.burstsFired = 0; this.burstCooldown = 0; this.strafeDir = random() > 0.5 ? 1 : -1; }
+    // --- ROBOT ---------------------------------------------------------
+    // The overworld unit for the two city sectors. The pistol regulars are the
+    // sector's PEOPLE -- they garrison it, and on the savior route they become
+    // the population you inherit -- so they have no business being the thing
+    // that respawns forever on the open road. NM-0 sends machines for that.
+    //
+    // Two health pools. The head is a 150 sensor housing, hit separately and
+    // never drawing on the chassis; the chassis is 350. Destroy the head and it
+    // cannot see, cannot aim and cannot be reasoned with, so it does the only
+    // thing left and runs at you -- the same shape as the hybrid's rage state,
+    // which is where the pattern comes from.
+    if (eT === "ROBOT") {
+        this.hp = 350; this.maxHp = 350;
+        this.bodyW = 30; this.bodyH = 34;
+        this.headHP = ROBOT_HEAD_HP;
+        this.enraged = false;
+        this.selfDestruct = 0;
+        this.chargeTimer = 0;        // counts up to ROBOT_CHARGE while winding up
+        this.burstLeft = 0;          // shots owed from the current charge
+        this.burstGap = 0;
+        this.fireCooldownR = 0;
+        this.shirtCol = color(132, 140, 149);   // chassis plate
+        this.pantsCol = color(78, 84, 92);      // actuators
+        this.trimCol  = color(255, 146, 40);    // the cannon's own orange
+        this.currentWeapon = WEAPONS.PISTOL;    // ammo bookkeeping only
+        this.isUnarmed = true;                  // it is not holding anything
+        this.strafeDir = random() > 0.5 ? 1 : -1;
+    }
+
     // --- HORSE ---------------------------------------------------------
     // Built on the same pattern as the cow: an animal is a Character with its
     // own AI branch in updateEnemy() and its own art branch in show(), and it
@@ -8387,6 +8488,102 @@ if (this.eType === "COW") {
         } 
     }
 
+    // ---- ROBOT ---------------------------------------------------------
+    // Its own loop rather than a branch inside CHASE: the machine has exactly
+    // two modes and neither of them is the human patrol-and-strafe. Placed
+    // after the sight cache so `canSee` is the real answer -- read before it,
+    // the machine had to assume it could always see and would happily wind up
+    // and fire a beam through a building.
+    if (this.eType === "ROBOT") {
+        const dR = dToP;
+        const aR = iA;
+
+        if (this.enraged) {
+            // Head gone. Runs the target down and detonates on a fuse it cannot
+            // stop, so the counterplay is distance, not damage.
+            this.aimAngle = aR;
+            this.selfDestruct--;
+            const m = this.attemptMove(cos(aR) * 3.9, sin(aR) * 3.9);
+            this.isMoving = (m.x !== 0 || m.y !== 0);
+            if (this.isMoving) { this.walkCycle += 0.42; this.moveAngle = aR; }
+            // Faster and louder the closer it gets to going off.
+            const t01 = 1 - Math.max(0, this.selfDestruct) / ROBOT_FUSE;
+            if (frameCount % Math.max(3, Math.round(11 - t01 * 8)) === 0) {
+                emit(this.x, this.y, 2, color(255, 120, 30), "FLECK");
+                if (t01 > 0.45) emit(this.x, this.y, 1, color(60), "SMOKE");
+            }
+            if (this.selfDestruct <= 0 && !this.dead) {
+                this.dead = true; this.hp = 0;
+                emit(this.x, this.y, 26, color(OIL_COL[0], OIL_COL[1], OIL_COL[2]), "OIL");
+                spawnSplatter(this.x, this.y, "BLOOD", color(OIL_COL[0], OIL_COL[1], OIL_COL[2]));
+                triggerExplosion(this.x, this.y, 190, false, false);
+                const ri = enemiesList.indexOf(this);
+                if (ri > -1) enemiesList.splice(ri, 1);
+            }
+            return;
+        }
+
+        if (this.fireCooldownR > 0) this.fireCooldownR--;
+        if (this.burstGap > 0) this.burstGap--;
+
+        // Loosing the two shots the charge bought.
+        if (this.burstLeft > 0) {
+            this.aimAngle = aR;
+            this.isMoving = false;
+            if (this.burstGap <= 0) {
+                const mx = this.x + cos(aR) * 34 - sin(aR) * 13;
+                const my = this.y + sin(aR) * 34 + cos(aR) * 13;
+                spawnBullet(mx, my, aR, false, "BODY", "ORANGE_BEAM", this);
+                emit(mx, my, 5, color(255, 170, 60), "MUZZLE", cos(aR) * 6, sin(aR) * 6);
+                sfx.shoot();
+                this.muzzleFlash = 3;
+                this.burstLeft--;
+                this.burstGap = ROBOT_BURST_GAP;
+                if (this.burstLeft <= 0) this.fireCooldownR = ROBOT_COOLDOWN;
+            }
+            return;
+        }
+
+        // Winding up. It holds its ground while charging: a two second wind-up
+        // that also walks at you is not a wind-up, it is a charge attack. Lose
+        // sight of the target and the charge is dumped.
+        if (this.chargeTimer > 0) {
+            if (!canSee) { this.chargeTimer = 0; this.fireCooldownR = 20; return; }
+            this.aimAngle = aR;
+            this.isMoving = false;
+            this.chargeTimer--;
+            if (frameCount % 4 === 0) {
+                const t01 = 1 - this.chargeTimer / ROBOT_CHARGE;
+                const mx = this.x + cos(aR) * 34 - sin(aR) * 13;
+                const my = this.y + sin(aR) * 34 + cos(aR) * 13;
+                emit(mx, my, 1, color(255, 150 + t01 * 90, 60), "FLECK");
+            }
+            if (this.chargeTimer <= 0) { this.burstLeft = ROBOT_BURST; this.burstGap = 0; }
+            return;
+        }
+
+        this.aimAngle = aR;
+        if (canSee && dR < 620 && this.fireCooldownR <= 0) {
+            this.chargeTimer = ROBOT_CHARGE;
+            this.isMoving = false;
+            return;
+        }
+        // Otherwise close the distance, or sidestep if it is already close.
+        let vxR, vyR;
+        if (dR > 380 || !canSee) { vxR = cos(aR) * 1.55; vyR = sin(aR) * 1.55; }
+        else { vxR = cos(aR + HALF_PI * this.strafeDir) * 1.15; vyR = sin(aR + HALF_PI * this.strafeDir) * 1.15; }
+        const mR = this.attemptMove(vxR, vyR);
+        if (mR.x === 0 && mR.y === 0) this.strafeDir = -this.strafeDir;
+        this.isMoving = (mR.x !== 0 || mR.y !== 0);
+        if (this.isMoving) { this.walkCycle += 0.2; this.moveAngle = atan2(mR.y, mR.x); }
+        // A holed chassis leaks whether it is moving or not.
+        if (this.hp <= ROBOT_OIL_AT && frameCount % 14 === 0) {
+            emit(this.x + random(-6, 6), this.y + random(-6, 6), 1,
+                 color(OIL_COL[0], OIL_COL[1], OIL_COL[2]), "OIL");
+        }
+        return;
+    }
+
     if (this.state === "PATROL") { 
         // A checkpoint garrison walks the arterial to the next post and back
         // rather than circling the nearest wall. Two waypoints and a leg flag:
@@ -8860,6 +9057,109 @@ if (this.stunTimer > 0 && this.skeletonTimer <= 0) {
         pop(); // 2. Close cow body rotation
         pop(); // 3. <--- THE MISSING POP: Closes the master character translate!
         return; // Don't draw the stickman body underneath!
+    }
+
+    if (this.eType === "ROBOT") {
+        push();
+        rotate(this.aimAngle);
+        const gait = this.isMoving ? sin(this.walkCycle) : 0;
+        const step = gait * (this.enraged ? 13 : 9);
+        const bob  = this.isMoving ? abs(sin(this.walkCycle)) * (this.enraged ? 2.4 : 1.4) : 0;
+        const heat = this.enraged ? 1 : (this.chargeTimer > 0 ? 1 - this.chargeTimer / ROBOT_CHARGE : 0);
+        if (this.hitFlash > 0) this.hitFlash--;
+        const flash = this.hitFlash > 0;
+
+        // Legs: two struts swinging out of phase, no torso overlap.
+        noStroke();
+        fill(58, 63, 70);
+        rect(-6 + step, -16, 13, 9, 2);
+        rect(-6 - step, 7, 13, 9, 2);
+        fill(44, 48, 54);
+        rect(2 + step * 1.2, -17, 9, 11, 2);
+        rect(2 - step * 1.2, 6, 9, 11, 2);
+
+        translate(bob, 0);
+
+        // Torso: a wedge, apex forward and down. The whole point of the
+        // silhouette is that it is NOT the human oval -- from above it reads as
+        // a chevron pointing where it is going.
+        fill(flash ? color(255) : this.shirtCol);
+        beginShape();
+        vertex(20, 0); vertex(4, -16); vertex(-13, -12); vertex(-13, 12); vertex(4, 16);
+        endShape(CLOSE);
+        fill(flash ? color(255) : color(96, 103, 111));
+        beginShape();
+        vertex(15, 0); vertex(3, -11); vertex(-8, -8); vertex(-8, 8); vertex(3, 11);
+        endShape(CLOSE);
+        // Chest vent and a core that glows with the charge
+        fill(38, 42, 47);
+        rect(-5, -6, 11, 12, 2);
+        fill(255, 120 + heat * 110, 40, 90 + heat * 165);
+        ellipse(0, 0, 6 + heat * 5, 6 + heat * 5);
+        fill(30, 33, 37);
+        for (let k = -1; k <= 1; k++) rect(-11, k * 5 - 1.4, 4, 2.8);
+
+        // Left arm: a plain manipulator.
+        fill(70, 76, 84);
+        rect(2, -21 - gait * 2, 9, 8, 2);
+        fill(52, 57, 63); rect(9, -21 - gait * 2, 6, 8, 2);
+
+        // Right arm: the cannon. Barrel, sleeve, and a muzzle ring that opens up
+        // as the charge builds.
+        fill(70, 76, 84);
+        rect(0, 12 + gait * 2, 12, 10, 2);
+        fill(88, 95, 104); rect(11, 13 + gait * 2, 20, 8, 2);
+        fill(52, 57, 63);  rect(27, 12.5 + gait * 2, 8, 9, 2);
+        fill(this.trimCol || color(255, 146, 40));
+        rect(20, 14.5 + gait * 2, 3.5, 5, 1);
+
+        // The charge itself: an orb growing out of almost nothing to about the
+        // size of a man's head, with a halo and a bright core.
+        if (this.chargeTimer > 0 || this.burstLeft > 0) {
+            const t01 = this.burstLeft > 0 ? 1 : 1 - this.chargeTimer / ROBOT_CHARGE;
+            const e = t01 * t01;                       // slow start, hard finish
+            const r = 1.5 + e * 11.5;                  // ~13 across at full, a head
+            const mx = 34, my = 13 + gait * 2;
+            drawingContext.globalCompositeOperation = 'lighter';
+            fill(255, 110, 20, 26 + e * 60); ellipse(mx, my, r * 3.4, r * 3.4);
+            fill(255, 150, 45, 60 + e * 120); ellipse(mx, my, r * 2.0, r * 2.0);
+            fill(255, 214, 150, 120 + e * 135); ellipse(mx, my, r, r);
+            fill(255, 252, 240, 90 + e * 165); ellipse(mx, my, r * 0.45, r * 0.45);
+            drawingContext.globalCompositeOperation = 'source-over';
+        }
+
+        // Head: a sensor housing while it has one, a torn socket when it does
+        // not. Losing it is the state change, so it has to be visible at a
+        // glance from across the street.
+        if (!this.enraged) {
+            const hurt = 1 - Math.max(0, this.headHP) / ROBOT_HEAD_HP;
+            fill(flash ? color(255) : color(84, 90, 98));
+            ellipse(6, 0, 15, 14);
+            fill(28, 31, 35); ellipse(9, 0, 10, 9);
+            fill(255, 60 + heat * 120, 30, 190);
+            rect(10, -3.4, 3.4, 6.8, 1);
+            if (hurt > 0.45) { fill(20, 18, 17, 190); ellipse(4 - hurt * 2, hurt * 3, 5, 4); }
+        } else {
+            fill(46, 40, 36); ellipse(6, 0, 13, 12);
+            fill(16, 15, 14); ellipse(6, 0, 8, 7);
+            // Live wiring, and the fuse light going faster the closer it gets.
+            stroke(120, 126, 134); strokeWeight(1.2);
+            line(3, -4, 0, -8); line(8, 4, 11, 8); line(9, -4, 12, -7);
+            noStroke();
+            const t01 = 1 - Math.max(0, this.selfDestruct) / ROBOT_FUSE;
+            const blink = frameCount % Math.max(4, Math.round(20 - t01 * 16));
+            if (blink < 3) { fill(255, 70, 30, 230); ellipse(-4, 0, 9 + t01 * 6, 9 + t01 * 6); }
+        }
+
+        // Damage decals ride the chassis like everyone else's.
+        for (let d of this.decals) {
+            fill(d.col ? d.col[0] : 16, d.col ? d.col[1] : 15, d.col ? d.col[2] : 14, d.col ? d.col[3] : 230);
+            ellipse(d.x, d.y, d.sz, d.sz);
+        }
+
+        pop();
+        pop();
+        return;
     }
 
     if (this.eType === "SNAIL_HYBRID") { 
@@ -10052,7 +10352,7 @@ function updateBullets() {
 
                 if (b.w === WEAPONS.ROCKET_LAUNCHER) { b.l = 0; triggerRocketExplosion(b.x, b.y, b.isP, t); continue; }
                 
-                let dmg = b.isRedLaser ? 30 : (b.isPinkLaser ? 30 : (b.isAlienLaser ? 25 : (b.w === WEAPONS.SHOTGUN ? (b.tH === "HEAD" ? 50 : 25) : (b.tH === "HEAD" ? b.w.headDmg : b.w.bodyDmg)))); 
+                let dmg = b.isOrangeBeam ? ROBOT_BEAM_DMG : (b.isRedLaser ? 30 : (b.isPinkLaser ? 30 : (b.isAlienLaser ? 25 : (b.w === WEAPONS.SHOTGUN ? (b.tH === "HEAD" ? 50 : 25) : (b.tH === "HEAD" ? b.w.headDmg : b.w.bodyDmg))))); 
                 
                 if (t.eType === "SNAIL_HYBRID" && b.tH === "HEAD") {
                     t.hybridHeadHP -= dmg;
@@ -10060,13 +10360,38 @@ function updateBullets() {
                     if (t.hybridHeadHP <= 0 && t.rightEye > 0) { t.rightEye = 0; t.eyeBleedR = 600; emit(t.x, t.y, 50, color(0, 100, 0), "GORE"); sfx.deathGrunt(); }
                 }
 
+                // The robot's head is its own 150-point pool and does not draw
+                // on the chassis at all. Once the housing is gone there is no
+                // head left to hit, so everything after that lands on the body.
+                let robotHeadKill = false, robotHeadAbsorbed = false;
+                if (t.eType === "ROBOT" && b.tH === "HEAD" && !t.enraged) {
+                    t.headHP -= dmg;
+                    robotHeadAbsorbed = true;
+                    emit(b.x, b.y, 7, color(SPARK_COL[0], SPARK_COL[1], SPARK_COL[2]), "FLECK", b.vx, b.vy);
+                    if (t.headHP <= 0) { robotHeadKill = true; }
+                }
+
                 if (t.eType === "ARMORED" && b.tH === "HEAD") dmg *= 2; 
                 let wA = (t.eType === "ARMORED" && t.hp > 300) || (t.eType === "ARMORED_STANDARD" && t.hp > 50) || t.eType === "SAUCER" || t.eType === "SAUCER_RED" || (t.eType === "SNAIL_HYBRID" && t.hp > 150 && b.tH !== "HEAD"); 
 
                 if (t.lastHitFrame !== frameCount) { t.lastHitFrame = frameCount; t.frameDamage = 0; } 
                 t.frameDamage += dmg; 
-                let dRes = t.takeDamage(dmg); 
+                let dRes = robotHeadAbsorbed ? { blocked: false, broken: false } : t.takeDamage(dmg); 
                 b.l = 0; 
+
+                if (robotHeadKill) {
+                    // The housing comes apart. From here it is a walking charge
+                    // on a fuse it cannot stop.
+                    t.enraged = true;
+                    t.selfDestruct = ROBOT_FUSE;
+                    t.chargeTimer = 0; t.burstLeft = 0;
+                    emit(t.x, t.y, 30, color(SPARK_COL[0], SPARK_COL[1], SPARK_COL[2]), "FLECK");
+                    emit(t.x, t.y, 16, color(OIL_COL[0], OIL_COL[1], OIL_COL[2]), "OIL");
+                    emit(t.x, t.y, 10, color(90), "CHIP");
+                    emit(t.x, t.y, 6, color(60), "SMOKE");
+                    sfx.hitArmor();
+                    spawnSplatter(t.x, t.y, "BLOOD", color(OIL_COL[0], OIL_COL[1], OIL_COL[2]));
+                }
                 
                 if (b.shooter && b.shooter.isFriendly && !b.shooter.isPlayer && !t.isFriendly && nm0AmbushActive) {
                     t.aggroTarget = b.shooter;
@@ -10097,9 +10422,22 @@ function updateBullets() {
                 let distSq = (lX * lX) / (rw * rw) + (lY * lY) / (rh * rh); if (distSq > 1) { let scale = 1 / Math.sqrt(distSq); lX *= scale; lY *= scale; }
                 let dCol = b.isRedLaser ? [255, 50, 50, 220] : (b.isPinkLaser ? [255, 105, 180, 220] : (b.isAlienLaser ? [200, 20, 100, 220] : ((t.eType === "BUG" || t.eType === "SNAIL") ? [200, 230, 40, 220] : [90, 0, 0, 220])));
                 if (wA) dCol = [20, 20, 20, 220]; 
+                // A machine does not bleed. Its bullet holes are burnt metal.
+                if (t.eType === "ROBOT") dCol = [16, 15, 14, 230]; 
                 t.decals.push({ x: lX, y: lY, sz: random(4, 7), col: dCol, isHead: b.tH === "HEAD" });
                 
-                if (wA) { sfx.hitArmor(); emit(b.x, b.y, 10, color(255, 150, 0), "SPARK"); emit(b.x, b.y, 5, color(100), "CHIP"); } 
+                if (t.eType === "ROBOT") {
+                    // Sparks the whole way down; oil once the chassis is opened
+                    // up past ROBOT_OIL_AT, and more of it the worse it gets.
+                    sfx.hitArmor();
+                    emit(b.x, b.y, robotHeadAbsorbed ? 4 : 9,
+                         color(SPARK_COL[0], SPARK_COL[1], SPARK_COL[2]), "FLECK", b.vx, b.vy);
+                    if (!robotHeadAbsorbed && t.hp <= ROBOT_OIL_AT) {
+                        const bleed = 3 + Math.round((1 - Math.max(0, t.hp) / ROBOT_OIL_AT) * 7);
+                        emit(b.x, b.y, bleed, color(OIL_COL[0], OIL_COL[1], OIL_COL[2]), "OIL", b.vx * 0.4, b.vy * 0.4);
+                    }
+                } 
+                else if (wA) { sfx.hitArmor(); emit(b.x, b.y, 10, color(255, 150, 0), "SPARK"); emit(b.x, b.y, 5, color(100), "CHIP"); } 
                 else { 
                     if (t.isPlayer && dRes.blocked) { sfx.hitArmor(); emit(b.x, b.y, dRes.broken ? 20 : 8, color(0, 200, 255), "SPARK", b.vx, b.vy); } 
                     else { if (b.tH === "HEAD" && t.eType !== "BUG" && t.eType !== "SNAIL" && t.eType !== "SNAIL_HYBRID") sfx.hitHead(); else sfx.hitBody(); emit(b.x, b.y, 8, bCol, "BLOOD", b.vx, b.vy); }
@@ -10108,6 +10446,30 @@ function updateBullets() {
                 
                 if (t.hp <= 0) { 
                     t.dead = true; sfx.deathGrunt(); let dT = 0, hA = (b.a - t.aimAngle + TWO_PI) % TWO_PI; 
+                    if (t.eType === "ROBOT") {
+                        // Comes apart where it stood: a hard shower of sparks, a
+                        // burst of oil driven out along the shot that finished it
+                        // -- protruding from the point of impact, not sprayed at
+                        // random -- and a chassis that lies there smoking.
+                        emit(b.x, b.y, 26, color(SPARK_COL[0], SPARK_COL[1], SPARK_COL[2]), "FLECK", b.vx, b.vy);
+                        emit(b.x, b.y, 22, color(OIL_COL[0], OIL_COL[1], OIL_COL[2]), "OIL", b.vx * 1.5, b.vy * 1.5);
+                        emit(t.x, t.y, 10, color(96, 100, 106), "CHIP");
+                        emit(t.x, t.y, 6, color(70), "SMOKE");
+                        spawnSplatter(t.x, t.y, "BLOOD", color(OIL_COL[0], OIL_COL[1], OIL_COL[2]));
+                        sfx.hitArmor();
+                        corpses.push(new Corpse(t.x, t.y, t.moveAngle, t.aimAngle, t.shirtCol, t.pantsCol,
+                                                t.enraged ? 1 : 0, hA, t.decals, t.currentWeapon, b.a,
+                                                "ROBOT", t.bodyW, t.bodyH));
+                        processKill(t.x, t.y, b.tH === "HEAD", t.eType, t.isFriendly);
+                        // `i` here is the BULLET index -- the target loop is a
+                        // for-of with no index of its own -- so the body has to
+                        // be found rather than assumed.
+                        const ri = enemiesList.indexOf(t);
+                        if (ri > -1) enemiesList.splice(ri, 1);
+                        if (totalKills < MAX_KILLS) setTimeout(spawnSingleEnemy, 100);
+                        b.active = false;
+                        break;
+                    }
                     if (t.eType === "SAUCER" || t.eType === "SAUCER_RED") { triggerExplosion(t.x, t.y, 160); } 
                     else if (t.eType === "AERIAL" || t.eType === "AERIAL_PISTOL") {
                         if (b.tH === "HEAD") { dT = 12; } else { let choices = [11, 5, 10]; dT = choices[floor(random(3))]; }
@@ -10494,7 +10856,7 @@ class Bullet {
   init(x, y, a, iP, tH, w) { 
     this.active = true;
     this.x = x; this.y = y; this.startX = x; this.startY = y; this.isP = iP; this.tH = tH; this.w = w; this.a = a; 
-    this.isAlienLaser = (w === "ALIEN_LASER"); this.isRedLaser = (w === "RED_LASER"); this.isPinkLaser = (w === "PINK_LASER"); this.isRocket = (w === WEAPONS.ROCKET_LAUNCHER); this.isTaser = (w === WEAPONS.TASER);
+    this.isAlienLaser = (w === "ALIEN_LASER"); this.isRedLaser = (w === "RED_LASER"); this.isPinkLaser = (w === "PINK_LASER"); this.isOrangeBeam = (w === "ORANGE_BEAM"); this.isRocket = (w === WEAPONS.ROCKET_LAUNCHER); this.isTaser = (w === WEAPONS.TASER);
     
     // NEW TASER VARIABLES
     this.retracting = false;
@@ -10502,7 +10864,7 @@ class Bullet {
     this.tetherTimer = 0;
 
     let s = 25; 
-    if (this.isAlienLaser || this.isRedLaser || this.isPinkLaser) { s = 9.8; } 
+    if (this.isAlienLaser || this.isRedLaser || this.isPinkLaser || this.isOrangeBeam) { s = 9.8; } 
     else if (this.isRocket) { s = 16; } 
     else if (w === WEAPONS.PISTOL && !iP) { s = 12.5; } 
     else if (iP && (w === WEAPONS.PISTOL || w === WEAPONS.SHOTGUN || w === WEAPONS.ASSAULT_RIFLE)) { s = 35; }
@@ -10511,8 +10873,8 @@ class Bullet {
     this.vx = cos(a) * s; this.vy = sin(a) * s; 
     this.l = w === WEAPONS.SHOTGUN ? 30 : 120; 
     
-    this.sz = (this.isAlienLaser || this.isRedLaser || this.isPinkLaser) ? 12 : (this.isRocket ? 16 : 6); 
-    this.col = this.isAlienLaser ? color(255, 20, 147) : (this.isRedLaser ? color(255, 50, 50) : (this.isPinkLaser ? color(255, 105, 180) : color(255, 200, 0))); 
+    this.sz = (this.isAlienLaser || this.isRedLaser || this.isPinkLaser || this.isOrangeBeam) ? 12 : (this.isRocket ? 16 : 6); 
+    this.col = this.isAlienLaser ? color(255, 20, 147) : (this.isRedLaser ? color(255, 50, 50) : (this.isPinkLaser ? color(255, 105, 180) : (this.isOrangeBeam ? color(255, 146, 40) : color(255, 200, 0)))); 
     
     this.history = []; 
     return this;
@@ -10521,7 +10883,7 @@ class Bullet {
   update() { 
       if (!this.active) return;
       this.history.push({x: this.x, y: this.y});
-      let maxLen = this.isRocket ? 15 : (this.isAlienLaser || this.isRedLaser || this.isPinkLaser ? 8 : 5);
+      let maxLen = this.isRocket ? 15 : (this.isAlienLaser || this.isRedLaser || this.isPinkLaser || this.isOrangeBeam ? 8 : 5);
       if (this.history.length > maxLen) this.history.shift();
 
       if (this.isTaser) {
@@ -10577,15 +10939,20 @@ class Bullet {
       // ==========================================
       // RESTORED ORIGINAL LASER BEAMS
       // ==========================================
-      if (this.isRedLaser || this.isPinkLaser) {
+      if (this.isRedLaser || this.isPinkLaser || this.isOrangeBeam) {
           translate(this.x, this.y); 
           rotate(this.a); 
-          stroke(this.isPinkLaser ? color(255, 20, 147, 150) : color(255, 0, 0, 150)); 
-          strokeWeight(8); 
-          line(0, 0, -40, 0); 
-          stroke(this.isPinkLaser ? color(255, 105, 180) : color(255, 100, 100)); 
-          strokeWeight(3); 
-          line(0, 0, -40, 0); 
+          // Same construction as the hybrid's beam -- a wide soft envelope with
+          // a hot core down the middle -- in the cannon's own orange.
+          stroke(this.isOrangeBeam ? color(255, 96, 0, 150)
+                : (this.isPinkLaser ? color(255, 20, 147, 150) : color(255, 0, 0, 150)));
+          strokeWeight(this.isOrangeBeam ? 10 : 8);
+          line(0, 0, this.isOrangeBeam ? -52 : -40, 0);
+          stroke(this.isOrangeBeam ? color(255, 190, 90)
+                : (this.isPinkLaser ? color(255, 105, 180) : color(255, 100, 100)));
+          strokeWeight(3.4);
+          line(0, 0, this.isOrangeBeam ? -52 : -40, 0);
+          if (this.isOrangeBeam) { stroke(255, 246, 214); strokeWeight(1.4); line(0, 0, -40, 0); }
           pop();
           return; 
       }
@@ -10677,7 +11044,11 @@ function Particle(x, y, c, t, dX = 0, dY = 0) {
     // frame, so every particle strobed between its extremes at 60Hz — smoke
     // swinging 20px to 40px and back. Dash and melee spawn THRUST, SPARK, GORE
     // and CHIP by the dozen, which is why those two actions flickered worst.
-    if (t === "FLASH" || t === "MUZZLE" || t === "THRUST" || t === "SPARK") this.sz = random(5, 12);
+    // A FLECK is a spark drawn as a streak rather than a dot: thin, quick, and
+    // it reads as struck metal instead of as a small fire.
+    if (t === "FLECK") this.sz = random(1.4, 3.2);
+    else if (t === "OIL") this.sz = random(3, 7);
+    else if (t === "FLASH" || t === "MUZZLE" || t === "THRUST" || t === "SPARK") this.sz = random(5, 12);
     else if (t === "GORE" || t === "CHIP") this.sz = random(4, 10);
     else if (t === "BONE") this.sz = random(2, 5);
     else if (t === "EXPLOSION") this.sz = random(10, 25);
@@ -10686,6 +11057,8 @@ function Particle(x, y, c, t, dX = 0, dY = 0) {
 
     if (t === "FLASH" || t === "MUZZLE") { this.vx = dX + random(-1, 1); this.vy = dY + random(-1, 1); this.l = t === "MUZZLE" ? 4 : random(10, 20); } 
     else if (t === "SPARK") { this.vx = dX + random(-5, 5); this.vy = dY + random(-5, 5); this.l = random(10, 20); } 
+    else if (t === "FLECK") { this.vx = dX * 0.35 + random(-7, 7); this.vy = dY * 0.35 + random(-7, 7); this.l = random(6, 16); } 
+    else if (t === "OIL")   { this.vx = dX * 0.18 + random(-3.4, 3.4); this.vy = dY * 0.18 + random(-3.4, 3.4); this.l = random(14, 30); } 
     else if (t === "CHIP") { this.vx = random(-3, 3); this.vy = random(-3, 3); this.l = random(20, 50); } 
     else if (t === "THRUST") { this.vx = dX + random(-2, 2); this.vy = dY + random(-2, 2); this.l = random(10, 20); } 
     else if (t === "BLOOD") { this.vx = dX * 0.15 + random(-3, 3); this.vy = dY * 0.15 + random(-3, 3); this.l = random(10, 20); } 
@@ -10695,11 +11068,18 @@ function Particle(x, y, c, t, dX = 0, dY = 0) {
     else { this.vx = random(-4, 4); this.vy = random(-4, 4); this.l = random(10, 20); } 
 }
 
-Particle.prototype.update = function() { this.x += this.vx; this.y += this.vy; if (this.t !== "FLASH" && this.t !== "SMOKE") { this.vx *= 0.85; this.vy *= 0.85; } if (--this.l <= 0) { if (this.t === "FLASH" || this.t === "MUZZLE" || this.t === "THRUST" || this.t === "EXPLOSION" || this.t === "SPARK") this.a -= 60; else this.a -= 15; } }
+Particle.prototype.update = function() { this.x += this.vx; this.y += this.vy; if (this.t !== "FLASH" && this.t !== "SMOKE") { this.vx *= (this.t === "FLECK" ? 0.9 : 0.85); this.vy *= (this.t === "FLECK" ? 0.9 : 0.85); } if (--this.l <= 0) { if (this.t === "FLASH" || this.t === "MUZZLE" || this.t === "THRUST" || this.t === "EXPLOSION" || this.t === "SPARK" || this.t === "FLECK") this.a -= 60; else this.a -= 15; } }
 Particle.prototype.show = function() {
     const c = this.c.levels;
     noStroke();
-    if (this.t === "BONE" || this.t === "CHIP") {
+    if (this.t === "FLECK") {
+        // Drawn along its own velocity, so a shower of them reads as directional
+        // spray rather than as a cloud of dots.
+        const m = Math.hypot(this.vx, this.vy) || 1;
+        stroke(c[0], c[1], c[2], this.a); strokeWeight(this.sz * 0.6);
+        line(this.x, this.y, this.x - (this.vx / m) * this.sz * 3.2, this.y - (this.vy / m) * this.sz * 3.2);
+        noStroke();
+    } else if (this.t === "BONE" || this.t === "CHIP") {
         fill(c[0], c[1], c[2], this.a);
         rect(this.x, this.y, this.sz, this.sz);
     } else if (this.t === "SMOKE" || this.t === "EXPLOSION") {
@@ -14976,10 +15356,10 @@ function settlementRoster(biome, cx, cy, solids) {
       for (let i = 0; i < n; i++) {
         const pt = popPlace(rng, solids, ox - 260, ox + 260, oy - 260, oy + 260);
         if (!pt) continue;
-        // Drawn from the sector's own table rather than hard-coded, so a
-        // garrison can never be a different army from the one holding the road
-        // outside it.
-        out.push({ type: overworldPick(biome, rng()) || "NORMAL",
+        // A checkpoint is manned by the sector's own people -- Stick City's
+        // men, the Undercity's women -- because these are exactly the ones the
+        // towers set free. The machines hold the road between the posts.
+        out.push({ type: biome === 2 ? "FEMALE_PISTOL" : (rng() > 0.78 ? "ARMORED_STANDARD" : "NORMAL"),
                    x: pt.x, y: pt.y,
                    route: route, home: { x: ox, y: oy } });
       }
