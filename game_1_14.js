@@ -941,10 +941,13 @@ function legacyGenerateMap() {
       buildings.push({ x: -600, y: -400, w: 300, h: 240, isBarn: true });
       buildings.push({ x: -600, y: 300, w: 400, h: 400, isCropField: true });
       
-      buildings.push({ x: -600, y: -100, w: 400, h: 10, isFence: true, hp: 2000, maxHp: 2000 }); 
-      buildings.push({ x: -600, y: 100, w: 400, h: 10, isFence: true, hp: 2000, maxHp: 2000 });  
-      buildings.push({ x: -800, y: 0, w: 10, h: 200, isFence: true, hp: 2000, maxHp: 2000 });    
-      buildings.push({ x: -400, y: 0, w: 10, h: 200, isFence: true, hp: 2000, maxHp: 2000 });    
+      // Cow pen. Horizontal rails inset by the post width so the four corners
+      // carry one solid each instead of two stacked on the same spot -- the same
+      // doubling the town corrals had.
+      buildings.push({ x: -600, y: -100, w: 390, h: 10, isFence: true, hp: 2000, maxHp: 2000 });
+      buildings.push({ x: -600, y:  100, w: 390, h: 10, isFence: true, hp: 2000, maxHp: 2000 });
+      buildings.push({ x: -800, y: 0, w: 10, h: 190, isFence: true, hp: 2000, maxHp: 2000 });
+      buildings.push({ x: -400, y: 0, w: 10, h: 190, isFence: true, hp: 2000, maxHp: 2000 });
 
       buildings.push({ x: 500, y: -600, w: 250, h: 160, isGasStation: true });
       buildings.push({ x: 400, y: -200, w: 180, h: 120, isLiquorStore: true });
@@ -1077,7 +1080,8 @@ function legacyGenerateMap() {
           { x: MAIN_X + 1010,  y: -430, w: 96, h: 54, isWagonProp: true },
           { x: MAIN_X - 980,   y: -1000, w: 96, h: 54, isWagonProp: true },
           // The town well on the plaza, and a second one out by the corrals
-          { x: MAIN_X - 90, y: FRONT_Y + 60, w: 58, h: 58, isWell: true },
+          // Off the carriageway, on the plaza's western apron
+          { x: MAIN_X - 250, y: FRONT_Y + 110, w: 58, h: 58, isWell: true },
           { x: MAIN_X + 1010, y: -1750, w: 58, h: 58, isWell: true },
           // Water towers: one for the town, one for the depot
           { x: MAIN_X + 430, y: -2700, w: 72, h: 72, isWaterTower: true },
@@ -1095,34 +1099,56 @@ function legacyGenerateMap() {
       // -- Corrals ----------------------------------------------------------
       // Two stock pens east of the livery, built from fence segments so they
       // block movement and take damage like every other fence in the game.
+      // A stock pen: four rails on the boundary with a gate in the town-facing
+      // side.
+      //
+      // The first version ran the top and bottom rails the full width AND the
+      // side rails the full height, so all four corners carried two solids on
+      // the same spot -- thirteen overlapping pairs across three pens, which is
+      // the doubled, thickened corners. The horizontal rails are inset by one
+      // post now so they butt against the uprights instead of through them, and
+      // the gate is a measured gap rather than "skip the first segment".
       const pen = (cx, cy, pw, ph) => {
-          const SEG = 90;
-          for (let px = -pw / 2; px < pw / 2; px += SEG) {
-              const seg = Math.min(SEG, pw / 2 - px);
-              buildings.push({ x: cx + px + seg / 2, y: cy - ph / 2, w: seg, h: 14, isFence: true, hp: 60, maxHp: 60 });
-              buildings.push({ x: cx + px + seg / 2, y: cy + ph / 2, w: seg, h: 14, isFence: true, hp: 60, maxHp: 60 });
+          const T = 14, SEG = 100, GATE = 170;
+          const x0 = cx - pw / 2, x1 = cx + pw / 2;
+          const y0 = cy - ph / 2, y1 = cy + ph / 2;
+          const rail = (ax, ay, w, h) =>
+              buildings.push({ x: ax, y: ay, w: w, h: h, isFence: true, hp: 60, maxHp: 60 });
+
+          const innerW = pw - T * 2;
+          for (let px = 0; px < innerW - 0.5; px += SEG) {
+              const seg = Math.min(SEG, innerW - px);
+              rail(x0 + T + px + seg / 2, y0 + T / 2, seg, T);
+              rail(x0 + T + px + seg / 2, y1 - T / 2, seg, T);
           }
-          for (let py = -ph / 2; py < ph / 2; py += SEG) {
-              const seg = Math.min(SEG, ph / 2 - py);
-              buildings.push({ x: cx - pw / 2, y: cy + py + seg / 2, w: 14, h: seg, isFence: true, hp: 60, maxHp: 60 });
-              // East side left open as the gate
-              if (py > -ph / 2 + SEG) buildings.push({ x: cx + pw / 2, y: cy + py + seg / 2, w: 14, h: seg, isFence: true, hp: 60, maxHp: 60 });
+          const innerH = ph - T * 2;
+          for (let py = 0; py < innerH - 0.5; py += SEG) {
+              const seg = Math.min(SEG, innerH - py);
+              rail(x0 + T / 2, y0 + T + py + seg / 2, T, seg);       // far side, closed
+              // Near side carries the gate, at its southern end.
+              if (y0 + T + py + seg > y1 - T - GATE) continue;
+              rail(x1 - T / 2, y0 + T + py + seg / 2, T, seg);
           }
       };
       pen(MAIN_X + 900, -160, 460, 380);
       pen(MAIN_X + 900, -1500, 420, 340);
       pen(MAIN_X - 950, -1500, 400, 320);
 
-      buildings.push({ x: 1300, y: -1140, w: 70, h: 70, isWaterTower: true });
-      buildings.push({ x: 1300, y: -1020, w: 40, h: 40, isWell: true });
-
-      // Town perimeter fencing (corral-style boundary)
-      buildings.push({ x: 1300, y: -2090, w: 900, h: 10, isFence: true });
-      buildings.push({ x: 860,  y: -1415, w: 10, h: 1330, isFence: true });
-      buildings.push({ x: 1740, y: -1415, w: 10, h: 1330, isFence: true });
+      // The old town perimeter is gone.
+      //
+      // It was three fences ringing the original ten-building strip: a 900-wide
+      // run across x 850..1750 at y -2090, and two 1330-long verticals at
+      // x 860 and x 1740. Against a town that now runs from the mine head down
+      // to the church they no longer enclose anything -- the horizontal one
+      // sealed Main Street shut between the assay office and the general store,
+      // and the two verticals ran the length of both boardwalks and straight
+      // across Front Street. That is what was blocking entry.
+      //
+      // The plaza water tower and well went with them: they stood dead centre
+      // on the crossing, and there is a well on the plaza and a tower by the
+      // depot already.
 
       // Scattered western dressing
-      buildings.push({ x: 1380, y: -1080, w: 45, h: 45, isHayBale: true });
       buildings.push({ x: 1000, y: -1260, w: 75, h: 55, isWagonProp: true });
       buildings.push({ x: 830,  y: -1900, w: 35, h: 55, isCactusProp: true });
       buildings.push({ x: 1770, y: -1550, w: 30, h: 50, isCactusProp: true });
@@ -6202,7 +6228,14 @@ this.punchHitCount = 0;
         this.shirtCol = color(206, 194, 168);     // homespun
         this.pantsCol = color(96, 84, 66);
         this.isFriendly = true; this.isNeutral = true; this.isCoward = true;
-        this.currentWeapon = WEAPONS.PISTOL;      // never fired; kept for the pose
+        // No sidearm at all. It was a pistol they never fired, on the theory
+        // that the machinery wants a weapon object -- but once the town turned
+        // they stopped being neutral, took the armed draw path, and stood there
+        // brandishing it while running away. The ammo pools are keyed by weapon
+        // name so something has to be set; isUnarmed is what the renderer and
+        // the firing code actually read.
+        this.currentWeapon = WEAPONS.PISTOL;
+        this.isUnarmed = true;
         this.hatCol = color(84, 74, 58);
     }
     if (eT === "VILLAGER_FEMALE") {
@@ -6211,6 +6244,7 @@ this.punchHitCount = 0;
         this.pantsCol = color(184, 168, 196);
         this.isFriendly = true; this.isNeutral = true; this.isCoward = true;
         this.currentWeapon = WEAPONS.PISTOL;
+        this.isUnarmed = true;
         this.bonnetCol = color(228, 220, 204);
         this.hairCol = random() > 0.5 ? color(122, 74, 38) : color(60, 44, 30);
     }
@@ -7942,25 +7976,12 @@ if (this.isPlayer) {
         ellipse(lArmSwing * 14, armLY, 8, 8);
         ellipse(rArmSwing * 14, armRY, 8, 8);
 
-        // Close the two transforms this method opened.
-        //
-        // show() pushes twice -- once to translate to the character, once to
-        // rotate to the aim -- and the matching pops are the last two
-        // statements of the `else` arm below. This arm did not have them, so
-        // every neutral townsperson on screen leaked two entries onto the
-        // transform stack every single frame. The stack then accumulated the
-        // camera's scale and translate on top of itself, which is why the
-        // buildings drifted away and mirrored, why anything drawn after the
-        // leak vanished, and why the HUD -- drawn after a pop() that no longer
-        // balanced -- floated across the world. Shooting a civilian appeared to
-        // "fix" it because that clears isNeutral, which sends everyone down the
-        // else arm instead, where the pops exist.
-        //
-        // Pre-existing: the farmers have always done this. It only became
-        // visible when Dry Gulch put forty neutrals in a street full of
-        // buildings for the transform to visibly destroy.
-        pop();
-        pop();
+        // Falls through to the shared head-and-close section below, which is
+        // where the hat, the head decals and this method's two closing pop()s
+        // live. This arm used to be a dead end: it drew sleeves and hands and
+        // then stopped, so a neutral townsperson had no head at all and the two
+        // transforms show() had opened were never closed. That second part was
+        // the drifting-buildings bug; this is the missing heads.
     } else {
                 // ---> DEFINE SWORD STATE HERE <---
         let usingSword = (this.isPlayer && typeof swordPickedUp !== 'undefined' && swordPickedUp && window.swordEquipped !== false);
@@ -8159,7 +8180,7 @@ if (lArmSwing > frontThreshold || lArmSwing < backThreshold) {
             if (this.eType === "MOLOTOV") { 
                 fill(30, 120, 30); rect(16, 7, 8, 16, 2); fill(255, 150, 0); rect(18, 3, 4, 4); 
             } 
-            else if (this.eType !== "AERIAL" && this.eType !== "AERIAL_PISTOL") { 
+            else if (this.eType !== "AERIAL" && this.eType !== "AERIAL_PISTOL" && !this.isUnarmed) { 
                 let isThrowing = this.isPlayer && (typeof isCooking !== 'undefined' && (isCooking || this.throwAnimTimer > 0));
 
                 if (this.currentWeapon === WEAPONS.SMG || this.currentWeapon === WEAPONS.DUAL_SMG) { fill(40); rect(16, 7, 24, 8, 2); rect(20, 15, 6, 12); } 
@@ -8212,6 +8233,12 @@ if (lArmSwing > frontThreshold || lArmSwing < backThreshold) {
         if (this.currentWeapon === WEAPONS.DUAL_SMG && !isThrowing) { push(); translate(bLX_L, bLY_L); fill(255, 200, 0, 200); noStroke(); beginShape(); vertex(0, -3); vertex(15 + random(10), -8); vertex(20 + random(15), 0); vertex(15 + random(10), 8); vertex(0, 3); endShape(CLOSE); pop(); }
     }
     
+    }
+
+    // ---- SHARED: head, hat, head decals, and the closing transforms ----
+    // Everything from here down is common to both arms above. It used to sit
+    // inside the armed arm, which is why a neutral citizen came out headless
+    // and why only the ones you had already angered got their faces back.
     let hX = 0, hY = 0;
    if (this.isArmed && (this.currentWeapon === WEAPONS.ASSAULT_RIFLE || this.currentWeapon === WEAPONS.SHOTGUN || this.currentWeapon === WEAPONS.ROCKET_LAUNCHER) && this.reloadTimer <= 0 && this.meleeTimer <= 0 && !this.dead) { hX = 3; hY = 4; }
 
@@ -8320,7 +8347,6 @@ if (lArmSwing > frontThreshold || lArmSwing < backThreshold) {
 
     pop();
     pop(); 
-  }
 }
 }
 
