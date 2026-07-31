@@ -401,6 +401,7 @@ if (isStoryMode) {
     window.towersDefeated = false;
     nm0AmbushActive = false;
     nm0AmbushKills = 0;
+    window.ambushKind = null;
     inTownCutscene = false;
     inFarmCutscene = false;
     farmAmbushActive = false;
@@ -3072,6 +3073,12 @@ popArchitecture = 0;
         nm0AmbushActive = false;
         window.nm0AmbushClearedStatus = true;
 
+        // Which ambush just ended decides which beat this is. Read it out and
+        // clear it here so the next one starts from a clean slate whichever
+        // branch below runs.
+        const clearedKind = window.ambushKind;
+        window.ambushKind = null;
+
         let towersAlive = buildings.filter(b => b.isTower && b.hp > 0).length;
 
         if (currentLevel === 1 && (window.southGateBreachedStatus || window.northGateBreachedStatus)) {
@@ -3099,6 +3106,21 @@ popArchitecture = 0;
                 seedSectorPopulationFromSurvivors();
                 openSectorDirective(1);
             }
+        } else if (currentLevel === 2 && clearedKind === "GATE") {
+            // THE UNDERCITY'S CURTAIN WALL — the same shape of beat as a Great
+            // Gate, and the same rule: blowing it open and killing what comes
+            // through opens the road, it does not finish the sector. Sector 02
+            // ends on its transmission towers and the ambush they call down, so
+            // a wall breach must not run the Directive early (which is what put
+            // the player out in the woodland with the towers still standing) and
+            // must not replay the liberation cutscene once the arc is over.
+            streakMsgText = window.undercityNorthBreached && window.undercitySouthBreached
+                ? "WALL BREACHED — THE UNDERCITY IS OPEN"
+                : (window.undercityNorthBreached ? "NORTH WALL BREACHED" : "SOUTH WALL BREACHED");
+            streakMsgTimer = 180;
+            objectiveTimer = 300;
+            camX = player.x - (width / 2) / zoom;
+            camY = player.y - (height / 2) / zoom;
         } else if (currentLevel >= 3 && currentLevel <= 7) {
             // GREEN LINE / FRONTIER SECTORS — no towers and no town to liberate,
             // so a cleared ambush is the whole objective and the Directive opens
@@ -3615,15 +3637,18 @@ viewBottom = camY + height / zoom + shakePad;
           
           // MERGE ACTIVE AMBUSHES (Scenario 4)
           if (nm0AmbushActive) {
-              nm0AmbushKills += 300; 
+              nm0AmbushKills += 300;
               window.ambushSpawnsRemaining += 200;
-              streakMsgText = "MULTIPLE AMBUSHES!"; 
+              streakMsgText = "MULTIPLE AMBUSHES!";
           } else {
-              nm0AmbushActive = true; 
-              nm0AmbushKills = 300; 
-              window.ambushSpawnsRemaining = 200; 
-              streakMsgText = "NM-0 AMBUSH!"; 
+              nm0AmbushActive = true;
+              nm0AmbushKills = 300;
+              window.ambushSpawnsRemaining = 200;
+              streakMsgText = "NM-0 AMBUSH!";
           }
+          // This is the sector's own beat, and it outranks any gate ambush that
+          // got folded into it -- clearing the merged field ends the level.
+          window.ambushKind = "TOWER";
 
           inTownCutscene = false; 
           objectiveTimer = 360; 
@@ -4576,6 +4601,9 @@ function resetStoryProgress() {
     window.northGateBreachedStatus = false;
     window.southGateBreachedStatus = false;
     window.southRoadAnnounced = false;
+    window.undercityNorthBreached = false;
+    window.undercitySouthBreached = false;
+    window.ambushKind = null;
     window.nm0AmbushClearedStatus = false;
     window.nm0AmbushCleared = false;
     window.nm0HqCleared = false;
@@ -4905,41 +4933,60 @@ function legacyGetSafeSpawn(away) {
 }
 
 function triggerGateAmbush(fortressY, isNorthGate = false) {
-    let spawnY = fortressY < 0 ? -3700 : 4900; 
-    let spawnX1 = 600;  
-    let spawnX2 = -200; 
-    
-    if (isNorthGate) window.northGateBreachedStatus = true;
-    else window.southGateBreachedStatus = true;
+    // The garrison musters just inside the gate that came down, wherever that
+    // gate happens to sit. Stick City's Great Gates are at -4200 / 5400 and the
+    // Undercity's curtain wall at -1800 / 3000, so this is derived from the
+    // wall rather than hard-coded to Stick City's pair.
+    let spawnY = fortressY < 0 ? fortressY + 500 : fortressY - 500;
+    let spawnX1 = 600;
+    let spawnX2 = -200;
+
+    // The breach flags are Stick City's -- they gate its arc, its NM-0 HQ prompt
+    // and travel out of the sector. The Undercity's wall is a different wall in a
+    // different sector and keeps its own record, or blowing it open would mark
+    // Stick City's Great Gate down without a shot being fired there.
+    if (currentLevel === 2) {
+        if (isNorthGate) window.undercityNorthBreached = true;
+        else window.undercitySouthBreached = true;
+    } else {
+        if (isNorthGate) window.northGateBreachedStatus = true;
+        else window.southGateBreachedStatus = true;
+    }
 
     // MERGE ACTIVE AMBUSHES (Scenario 4)
     if (nm0AmbushActive) {
-        nm0AmbushKills += 150; 
+        nm0AmbushKills += 150;
         window.ambushSpawnsRemaining += 100;
         streakMsgText = "MULTIPLE BREACHES!";
     } else {
-        nm0AmbushActive = true; 
-        nm0AmbushKills = 150; 
+        nm0AmbushActive = true;
+        nm0AmbushKills = 150;
         window.ambushSpawnsRemaining = 100;
-        objectiveTimer = 360; 
-        streakMsgText = isNorthGate ? "NORTH GATE BREACHED!" : "SOUTH GATE BREACHED!"; 
+        objectiveTimer = 360;
+        // A wall coming down is a wall coming down -- it opens the road, it does
+        // not finish the sector. Tagging the ambush is what keeps its clear from
+        // being mistaken for the story beat that ends the level.
+        window.ambushKind = "GATE";
+        streakMsgText = isNorthGate ? "NORTH GATE BREACHED!" : "SOUTH GATE BREACHED!";
     }
     streakMsgTimer = 120;
-    
+
+    let gateAerY = spawnY < 0 ? spawnY + 100 : spawnY - 100;
+
     // --- BATCH 1: EAST ---
     for(let i=0; i<21; i++) enemiesList.push(new Character(spawnX1 + random(-250, 250), spawnY + random(-50, 50), false, "ARMORED_STANDARD"));
     for(let i=0; i<2; i++) enemiesList.push(new Character(spawnX1 + random(-100, 100), spawnY + random(-50, 50), false, "ARMORED"));
-    for(let i=0; i<2; i++) enemiesList.push(new Character(spawnX1 + random(-300, 300), spawnY < 0 ? -3600 : 4800, false, "AERIAL"));
+    for(let i=0; i<2; i++) enemiesList.push(new Character(spawnX1 + random(-300, 300), gateAerY, false, "AERIAL"));
 
     // --- BATCH 2: WEST ---
     for(let i=0; i<21; i++) enemiesList.push(new Character(spawnX2 + random(-250, 250), spawnY + random(-50, 50), false, "ARMORED_STANDARD"));
     for(let i=0; i<2; i++) enemiesList.push(new Character(spawnX2 + random(-100, 100), spawnY + random(-50, 50), false, "ARMORED"));
-    for(let i=0; i<2; i++) enemiesList.push(new Character(spawnX2 + random(-300, 300), spawnY < 0 ? -3600 : 4800, false, "AERIAL"));
-    
+    for(let i=0; i<2; i++) enemiesList.push(new Character(spawnX2 + random(-300, 300), gateAerY, false, "AERIAL"));
+
         // --- BATCH 2: WEST ---
     for(let i=0; i<21; i++) enemiesList.push(new Character(spawnX2 + random(-250, 250), spawnY + random(-50, 50), false, "ARMORED_STANDARD"));
     for(let i=0; i<2; i++) enemiesList.push(new Character(spawnX2 + random(-100, 100), spawnY + random(-50, 50), false, "ARMORED"));
-    for(let i=0; i<2; i++) enemiesList.push(new Character(spawnX2 + random(-300, 300), spawnY < 0 ? -3600 : 4800, false, "AERIAL"));
+    for(let i=0; i<2; i++) enemiesList.push(new Character(spawnX2 + random(-300, 300), gateAerY, false, "AERIAL"));
     
     for(let e of enemiesList) { if(!e.isFriendly && e.hp > 0 && !e.dead) { e.state = "CHASE"; e.loseSightTimer = 999; } }
 
@@ -12650,6 +12697,9 @@ function saveGame() {
         northGateBreachedStatus: window.northGateBreachedStatus,
         southGateBreachedStatus: window.southGateBreachedStatus,
         southRoadAnnounced: window.southRoadAnnounced,
+        undercityNorthBreached: window.undercityNorthBreached,
+        undercitySouthBreached: window.undercitySouthBreached,
+        ambushKind: window.ambushKind,
         nm0HqCleared: window.nm0HqCleared,
         armorBlueprintPickedUp: window.armorBlueprintPickedUp,
         farmerBlueprintUnlocked: window.farmerBlueprintUnlocked,
@@ -12711,6 +12761,9 @@ function loadGame() {
         window.northGateBreachedStatus = state.northGateBreachedStatus || false;
         window.southGateBreachedStatus = state.southGateBreachedStatus || false;
         window.southRoadAnnounced = state.southRoadAnnounced || false;
+        window.undercityNorthBreached = state.undercityNorthBreached || false;
+        window.undercitySouthBreached = state.undercitySouthBreached || false;
+        window.ambushKind = state.ambushKind || null;
         window.nm0HqCleared = state.nm0HqCleared || false;
         window.armorBlueprintPickedUp = state.armorBlueprintPickedUp || false;
         window.farmerBlueprintUnlocked = state.farmerBlueprintUnlocked || false;
@@ -12845,7 +12898,8 @@ window.militaryToBring = state.militaryToBring || 0;
             if (nm0AmbushActive) {
                 let spawnY = (currentLevel === 1) ? 4950 : 1800;
                 let aerY = (currentLevel === 1) ? 4900 : 1750;
-                
+                if (!window.ambushKind) window.ambushKind = "TOWER";
+
                 // Keep the live counter and active spawns perfectly locked
                 let activeToSpawn = Math.min(100, nm0AmbushKills);
                 window.ambushSpawnsRemaining = Math.max(0, nm0AmbushKills - activeToSpawn);
@@ -18250,6 +18304,17 @@ function restoreAuthoredStoryState(lvl) {
       if (!b.isGovFortress) continue;
       if (b.y < 0 && (window.northGateBreachedStatus || window.northGateBreached)) b.hp = 0;
       if (b.y > 0 && window.southGateBreachedStatus) b.hp = 0;
+    }
+  }
+
+  // Same for the Undercity's curtain wall. Blowing it open is a real cost in
+  // rockets and it is the only way through the sector, so it is not something
+  // to make the player pay for twice on a re-entry or a reload.
+  if (lvl === 2) {
+    for (const b of buildings) {
+      if (!b.isGovFortress) continue;
+      if (b.y < 0 && window.undercityNorthBreached) b.hp = 0;
+      if (b.y > 0 && window.undercitySouthBreached) b.hp = 0;
     }
   }
 }
