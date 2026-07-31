@@ -799,6 +799,39 @@ function legacyGenerateMap() {
         sealedSector = { x0: -4200, x1: 5400, y0: -3800, y1: 5000 };
     }
 
+    if (currentLevel === 2) {
+        // The Undercity gets the same treatment Stick City has: two breachable
+        // gates on the north and south approaches and a curtain wall down each
+        // flank joining them, so the blocks are genuinely enclosed and the only
+        // way out of the sector is through a barrier you have to blow.
+        //
+        // Sized to this sector rather than copied: its blocks run -1..1, so they
+        // cover x and y -1080..2280 against Stick City's -3480..4080. The gates
+        // are 3600 wide centred on x 600 -- x -1200..2400 -- and the walls sit
+        // immediately outside those ends and span from the north gate's outer
+        // face to the south gate's outer face, so all four corners meet with no
+        // seam to walk through.
+        //
+        // Blowing either gate is what puts the player into the woodland, which
+        // is where the overworld generation actually starts.
+        buildings.push({ x: 600, y: -1800, w: 3600, h: 800, isGovFortress: true, details: [], hp: 3000, maxHp: 3000, hitFlash: 0 });
+        buildings.push({ x: 400, y: -1300, w: 150, h: 40, isWall: true });
+        buildings.push({ x: 800, y: -1300, w: 150, h: 40, isWall: true });
+
+        buildings.push({ x: 600, y: 3000, w: 3600, h: 800, isGovFortress: true, details: [], hp: 3000, maxHp: 3000, hitFlash: 0 });
+        buildings.push({ x: 400, y: 2500, w: 150, h: 40, isWall: true });
+        buildings.push({ x: 800, y: 2500, w: 150, h: 40, isWall: true });
+
+        const UWALL_T = 500;
+        const UWALL_Y = 600, UWALL_H = 5600;      // y -2200 .. 3400
+        buildings.push({ x: -1200 - UWALL_T / 2, y: UWALL_Y, w: UWALL_T, h: UWALL_H,
+                         isGiantBarrier: true, details: [] });
+        buildings.push({ x:  2400 + UWALL_T / 2, y: UWALL_Y, w: UWALL_T, h: UWALL_H,
+                         isGiantBarrier: true, details: [] });
+
+        sealedSector = { x0: -1200, x1: 2400, y0: -1400, y1: 2600 };
+    }
+
     for (let bX = startBx; bX <= endBx; bX++) {
       for (let bY = startBy; bY <= endBy; bY++) {
         let blockStartX = bX * 1200 + 120, blockStartY = bY * 1200 + 120;
@@ -1936,7 +1969,7 @@ function drawBuildingShadows() {
   // whole scene reads as one lit space. See drawBiomeShadows().
   if (BIOME_ACTIVE) { drawBiomeShadows(); return; }
   for (let b of activeBuildings) {
-    if (b.isBiomeProp) continue;
+    if (b.isBiomeProp || b.isTreeTrunk) continue;
     if ((currentLevel === 1 || currentLevel === 2) && b.isGrassLot) continue;
     if (b.isCropField) continue; // Don't shadow the ground
 
@@ -1971,6 +2004,10 @@ function drawBuildings() {
   for (let b of activeBuildings) { // Changed to activeBuildings
     if (!inView(b.x, b.y, Math.max(b.w || 0, b.h || 0) + 150)) continue;
     if (b.isBiomeProp) continue; // drawn by drawBiomeProps()
+    // A trunk is a collision volume so you cannot walk through a tree. The
+    // canopy in the decor list is what you actually see; without this the
+    // generic building branch drew a dark box under every tree in the wood.
+    if (b.isTreeTrunk) continue;
     if (BIOME_ACTIVE && b.isGrassLot && !b.isPond && !b.isParkingLot) continue;
     if ((currentLevel === 1 || currentLevel === 2) && b.isGrassLot && !b.isPond && !b.isParkingLot) continue;
     if (b.isParkingCar) continue; 
@@ -4962,8 +4999,8 @@ const OVERWORLD = {
 // A garrison unit is left alone by the whitelist sweep wherever it is standing;
 // it simply never spawns as a wanderer.
 const SECTOR_GARRISON = {
-  1: ["NORMAL", "MOLOTOV", "ARMORED_STANDARD", "ARMORED"],
-  2: ["FEMALE_PISTOL", "ARMORED_STANDARD", "ARMORED"]
+  1: ["NORMAL", "MOLOTOV", "ARMORED_STANDARD", "ARMORED", "NM0_ROOKIE"],
+  2: ["FEMALE_PISTOL", "ARMORED_STANDARD", "ARMORED", "NM0_ROOKIE_F"]
 };
 
 // The set that is allowed to exist in each biome's outer region, precomputed.
@@ -5005,7 +5042,7 @@ function outerRegionUncached(x, y) {
   if (typeof nearSettlement === 'function' && nearSettlement(x, y)) return false;  // towns
   const cx = Math.floor(x / CHUNK_W), cy = Math.floor(y / CHUNK_W);
   const lay = BIOME_ACTIVE && BIOMES[currentBiome] ? BIOMES[currentBiome].layout : null;
-  if (lay === "CITY" || lay === "CITY_DENSE") {              // outposts
+  if (lay === "CITY" || lay === "CITY_DENSE" || lay === "WOODLAND") {   // outposts
     for (let j = cy - 1; j <= cy + 1; j++)
       for (let i = cx - 1; i <= cx + 1; i++)
         if (cityIsCheckpoint(currentBiome, i, j)) return false;
@@ -5069,9 +5106,14 @@ function sweepForeignHostiles() {
 function spawnSingleEnemy() {
   // Do not spawn random hostiles if the town is liberated, ambush is active, or in specific story scenes!
  
-  if (currentLevel === 0 || nm0AmbushActive || window.towersDefeated) return;
-  // Its grid is down and its garrison came over. Nothing new arrives.
-  if (isStoryMode && sectorTowersAreDown(currentLevel)) return;
+  if (currentLevel === 0 || nm0AmbushActive) return;
+  // With the grid down the sector's own people are yours and NM-0 never sends
+  // more of them -- but it does keep sending machines down the road, and the
+  // posts fill back up with intake. Both of those come from elsewhere: the
+  // overworld table and the settlement roster. This function only ever spawns
+  // wanderers, and after the towers there are no HUMAN wanderers left to send.
+  if (window.towersDefeated && !OVERWORLD_SET[currentLevel]) return;
+  if (isStoryMode && sectorTowersAreDown(currentLevel) && !OVERWORLD_SET[currentLevel]) return;
   // Random wanderers belong in the outer region and nowhere else. A town is held
   // by its residents, an outpost by its garrison, an NM-0 facility by the story;
   // none of them want a stranger materialising in the middle of them. This used
@@ -7225,6 +7267,27 @@ this.punchHitCount = 0;
     if (eT === "ALIEN_GATOR") { this.hp = 250; this.bodyW = 63; this.bodyH = 81; this.shirtCol = color(120); this.pantsCol = color(20, 100, 20); }
     if (eT === "SAUCER" || eT === "SAUCER_RED") { this.hp = 750; this.bodyW = 80; this.bodyH = 80; if (eT === "SAUCER_RED") { this.burstsFired = 0; this.burstCooldown = 0; this.strafeDir = random() > 0.5 ? 1 : -1; } }
     if (eT === "SNAIL_HYBRID") { this.hp = 500; this.bodyW = 63; this.bodyH = 81; this.shirtCol = color(173, 216, 230); this.pantsCol = color(100, 150, 200); this.hybridHeadHP = 100; this.leftEye = 1; this.rightEye = 1; this.enraged = false; this.eyeBleedL = 0; this.eyeBleedR = 0; this.burstsFired = 0; this.burstCooldown = 0; this.strafeDir = random() > 0.5 ? 1 : -1; }
+    // --- NM-0 ROOKIES ---------------------------------------------------
+    // Who NM-0 has left to man a checkpoint once a sector's own regulars have
+    // gone over. Fresh intake: blue fatigues, a pistol, and neither a helmet
+    // nor a plate carrier, which is the whole read -- a bare head on a body
+    // that has not earned armour yet. Stick City's are men, the Undercity's are
+    // women in a lighter blue.
+    if (eT === "NM0_ROOKIE") {
+        this.hp = 90;
+        this.shirtCol = color(46, 84, 176);
+        this.pantsCol = color(38, 52, 82);
+        this.currentWeapon = WEAPONS.PISTOL;
+        this.isRookie = true;
+    }
+    if (eT === "NM0_ROOKIE_F") {
+        this.hp = 85; this.bodyW = 16; this.bodyH = 25;
+        this.shirtCol = color(124, 172, 226);
+        this.pantsCol = color(62, 82, 118);
+        this.currentWeapon = WEAPONS.PISTOL;
+        this.isRookie = true;
+    }
+
     // --- ROBOT ---------------------------------------------------------
     // The overworld unit for the two city sectors. The pistol regulars are the
     // sector's PEOPLE -- they garrison it, and on the savior route they become
@@ -8585,6 +8648,33 @@ if (this.eType === "COW") {
     }
 
     if (this.state === "PATROL") { 
+        // Leashed to a post. Walks a beat around it and never leaves it, which
+        // is what makes an outpost garrison read as a garrison instead of as a
+        // patrol that happens to have started there.
+        if (this.postX !== undefined) {
+            const R = this.postR || 300;
+            const dHome = dist(this.x, this.y, this.postX, this.postY);
+            if (this.beatTimer === undefined || this.beatTimer <= 0 || dHome > R) {
+                // Pick a new mark inside the leash. Outside it, the mark is the
+                // post itself, so he walks back in.
+                this.beatTimer = floor(random(90, 220));
+                if (dHome > R) { this.beatX = this.postX; this.beatY = this.postY; }
+                else {
+                    const a = random(TWO_PI), rr = random(60, R * 0.85);
+                    this.beatX = this.postX + cos(a) * rr;
+                    this.beatY = this.postY + sin(a) * rr;
+                }
+            }
+            this.beatTimer--;
+            this.aimAngle = atan2(this.beatY - this.y, this.beatX - this.x);
+            const bm = this.attemptMove(cos(this.aimAngle) * 1.1 * spd, sin(this.aimAngle) * 1.1 * spd);
+            aDx = bm.x; aDy = bm.y;
+            if (dist(this.x, this.y, this.beatX, this.beatY) < 30 || (aDx === 0 && aDy === 0)) this.beatTimer = 0;
+            if (aDx !== 0 || aDy !== 0) { this.isMoving = true; this.walkCycle += 0.2; this.moveAngle = atan2(aDy, aDx); }
+            else this.isMoving = false;
+            this.armDrag = lerp(this.armDrag, this.isMoving ? 1 : 0, 0.15);
+            return;
+        }
         // A checkpoint garrison walks the arterial to the next post and back
         // rather than circling the nearest wall. Two waypoints and a leg flag:
         // the road between two outposts is the patrol, and that is the whole
@@ -9751,6 +9841,21 @@ if (lArmSwing > frontThreshold || lArmSwing < backThreshold) {
         fill(235, 180, 140); ellipse(hX, hY, 11, 11); 
         fill(15); arc(hX, hY, 12, 12, HALF_PI, PI + HALF_PI);
         push(); translate(hX - 5, hY); rotate(radians(this.isMoving ? sin(frameCount * 0.3) * 15 : 0)); ellipse(-6, 0, 12, 6); pop();
+    } else if (this.eType === "NM0_ROOKIE" || this.eType === "NM0_ROOKIE_F") {
+        // Bare head. No helmet is the point -- against a sector full of
+        // helmeted regulars and armoured machines, an uncovered head reads as
+        // "new" from across the street, and it is where you shoot him.
+        fill(235, 180, 140); ellipse(hX, hY, 11, 11);
+        if (this.eType === "NM0_ROOKIE_F") {
+            fill(64, 46, 32); arc(hX, hY, 12, 12, HALF_PI, PI + HALF_PI);
+            push(); translate(hX - 5, hY);
+            rotate(radians(this.isMoving ? sin(frameCount * 0.3) * 15 : 0));
+            ellipse(-6, 0, 12, 6); pop();
+        } else {
+            fill(58, 44, 32); arc(hX, hY, 11.5, 11.5, PI + 0.5, TWO_PI - 0.5);
+        }
+        // Recruit's collar flash, so the blue reads even at a glance.
+        fill(this.shirtCol); ellipse(hX - 6.5, hY, 5, 7);
     } else if (this.eType === "BANDIT") {
         fill(214, 168, 132); ellipse(hX, hY, 11, 11);
         push(); translate(hX, hY);
@@ -13042,7 +13147,11 @@ const BIOMES = {
       walk: [104, 108, 117], grass: [46, 64, 52]
     },
     weather: "ACID_RAIN",
-    layout: "CITY_DENSE",
+    // Inside the curtain wall this sector is still the authored Undercity, and
+    // layoutFor() hands those chunks CITY_DENSE so the bake keeps painting
+    // streets on the grid the blocks were laid on. Everything past the wall is
+    // open country.
+    layout: "WOODLAND",
     climate: { clear: "FOG", wet: "ACID_RAIN", rain: 0.05, cloud: 0.55, dayF: [75, 85], nightF: [60, 65] },
     fog: [12, 16, 30, 60],
     clutterDensity: 0.85,
@@ -13725,6 +13834,24 @@ function solidsClearAt(list, x, y, w, h, pad) {
   return true;
 }
 
+// A Directive post: barrier across the way through, guard boxes on the near
+// corners, sandbags on the approaches, blast walls funnelling the crossing.
+// Built from the same props the border anchors use, so it reads as the same
+// organisation without any new art, and identical in the city and in the woods.
+function placeCheckpoint(solid, biome, cx, cy, ox, oy, nearAnchor) {
+  if (!cityIsCheckpoint(biome, cx, cy)) return;
+  if (nearAnchor && nearAnchor(ox, oy, 900)) return;
+  const P = (x, y, w, h, t) => solid.push({ x, y, w, h, isBiomeProp: true, propType: t });
+  P(ox, oy - 150, 300, 70, "CHECKPOINT");
+  P(ox, oy + 150, 300, 70, "CHECKPOINT");
+  P(ox - 190, oy - 190, 150, 55, "GUARDBOX");
+  P(ox + 190, oy + 190, 150, 55, "GUARDBOX");
+  P(ox - 210, oy + 130, 60, 60, "SANDBAG");
+  P(ox + 210, oy - 130, 60, 60, "SANDBAG");
+  P(ox - 330, oy - 330, 36, 150, "BLASTWALL");
+  P(ox + 330, oy + 330, 36, 150, "BLASTWALL");
+}
+
 function generateChunkContent(biome, cx, cy) {
   // Inside the authored core the hand-placed map IS the world. The chunk still
   // bakes its terrain there — that is what makes the streets and textures run
@@ -13762,7 +13889,7 @@ function generateChunkContent(biome, cx, cy) {
   // already carved out of a subdivided block, which cannot self-intersect.
   let lat = null;
 
-  switch (def.layout) {
+  switch (layoutFor(biome, cx, cy)) {
 
     // ===================== BIOME 1 & 2 : URBAN GRID =====================
     case "CITY":
@@ -13898,23 +14025,59 @@ function generateChunkContent(biome, cx, cy) {
         }
       }
 
-      // --- Directive checkpoint ------------------------------------------
-      // Built from the same props the border anchors use, so it reads as the
-      // same organisation without any new art. Barrier across the junction,
-      // guard boxes on the near corners, sandbags on the approaches, blast
-      // walls turning the crossing into a funnel.
-      if (cityIsCheckpoint(biome, cx, cy) && !nearAnchor(ox, oy, 900)) {
-        const P = (x, y, w, h, t) =>
-          solid.push({ x, y, w, h, isBiomeProp: true, propType: t });
-        P(ox, oy - 150, 300, 70, "CHECKPOINT");
-        P(ox, oy + 150, 300, 70, "CHECKPOINT");
-        P(ox - 190, oy - 190, 150, 55, "GUARDBOX");
-        P(ox + 190, oy + 190, 150, 55, "GUARDBOX");
-        P(ox - 210, oy + 130, 60, 60, "SANDBAG");
-        P(ox + 210, oy - 130, 60, 60, "SANDBAG");
-        P(ox - 330, oy - 330, 36, 150, "BLASTWALL");
-        P(ox + 330, oy + 330, 36, 150, "BLASTWALL");
+      placeCheckpoint(solid, biome, cx, cy, ox, oy, nearAnchor);
+      break;
+    }
+
+    // ===================== BIOME 2 OUTER : WOODLAND =====================
+    // What is between the Undercity's curtain wall and the next Directive post.
+    // Not a city block in sight: standing timber, meadow, a track, and the
+    // occasional ruin left where the grid used to reach.
+    case "WOODLAND": {
+      lat = makeLattice(rng, ox, oy, 150);
+      for (const a of anchors) lat.block(a.x, a.y, 1100, 1100);
+      // The track stays clear, and so does the post.
+      for (let wy = oy - 60; wy <= oy + CHUNK_W + 60; wy += 60) {
+        lat.block(woodTrailX(biome, cx, wy), wy, 260, 90);
       }
+      if (cityIsCheckpoint(biome, cx, cy)) lat.block(ox, oy, 900, 900);
+
+      // Copses, not an even sprinkle. Trees cluster where the canopy field runs
+      // high and thin out to meadow between, which is what makes woodland read
+      // as woodland rather than as an orchard.
+      const canopy = bnoise(biome, ox, oy, 0.00055);
+      const nTree = Math.round(4 + canopy * 26);
+      for (let i = 0; i < nTree; i++) {
+        const spot = lat.take(56, 56);
+        if (!spot) break;
+        if (nearAnchor(spot.x, spot.y, 420)) continue;
+        if (bnoise(biome, spot.x, spot.y, 0.0026) < 0.42) continue;   // meadow gaps
+        solid.push({ x: spot.x, y: spot.y, w: 34, h: 34, isTreeTrunk: true });
+        decor.push({ t: "TREE", x: spot.x, y: spot.y,
+                     s: rngRange(rng, 0.9, 1.7), r: rng() * TWO_PI, c: rng() });
+      }
+
+      // Boulders and deadfall.
+      const nRock = rngInt(rng, 1, 5);
+      for (let i = 0; i < nRock; i++) {
+        const w = rngRange(rng, 70, 150), h = rngRange(rng, 60, 130);
+        const spot = lat.take(w, h);
+        if (!spot) break;
+        solid.push({ x: spot.x, y: spot.y, w, h,
+                     isBiomeProp: true, propType: "BOULDER", tint: rng(), angle: rng() * TWO_PI });
+      }
+
+      // A ruin every so often -- the grid used to come out this far.
+      if (rng() > 0.72) {
+        const w = rngRange(rng, 170, 280), h = rngRange(rng, 150, 240);
+        const spot = lat.take(w + 60, h + 60);
+        if (spot && !nearAnchor(spot.x, spot.y, 620)) {
+          solid.push({ x: spot.x, y: spot.y, w, h, style: rngInt(rng, 0, 4), details: [],
+                       isBlockBuilding: true });
+        }
+      }
+
+      placeCheckpoint(solid, biome, cx, cy, ox, oy, nearAnchor);
       break;
     }
 
@@ -14190,7 +14353,7 @@ function generateChunkContent(biome, cx, cy) {
     // Noise gate: clutter pools in low-traffic areas instead of spreading evenly
     if (bnoise(biome, dx, dy, 0.0022) < 0.38) continue;
     const item = {
-      t: pickClutterType(def, rng),
+      t: pickClutterType(def, rng, layoutFor(biome, cx, cy)),
       x: dx, y: dy,
       s: rngRange(rng, 0.6, 1.5),
       r: rng() * TWO_PI,
@@ -14256,9 +14419,37 @@ const CLUTTER_ANIMATED = {
                       // it comes back as squares
 };
 
-function pickClutterType(def, rng) {
+// The Undercity is two terrains, and the curtain wall is the join. Inside it
+// the sector is the authored city and the bake has to keep painting streets on
+// the same grid the blocks were laid on; outside it there is no city at all,
+// just the country between one Directive post and the next.
+const WOOD_PAL = {
+  base: [88, 118, 63], alt: [107, 134, 76], dark: [52, 76, 43],
+  accent: [132, 156, 90], road: [124, 106, 76], mark: [188, 170, 122],
+  walk: [142, 162, 106], grass: [94, 126, 68]
+};
+function layoutFor(biome, cx, cy) {
+  const def = BIOMES[biome];
+  if (!def) return "CITY";
+  if (def.layout === "WOODLAND" && chunkInAuthoredCore(cx, cy)) return "CITY_DENSE";
+  return def.layout;
+}
+function palFor(biome, cx, cy) {
+  return layoutFor(biome, cx, cy) === "WOODLAND" ? WOOD_PAL : BIOMES[biome].pal;
+}
+// The track through the woods. Same construction as the frontier trail -- a
+// function of the chunk COLUMN and world y only -- so it meets at the seams.
+function woodTrailX(biome, cx, wy) { return trailCentreX(biome, cx, wy, 5100, 520, 280); }
+
+function pickClutterType(def, rng, layout) {
   const r = rng();
-  switch (def.layout) {
+  switch (layout || def.layout) {
+    case "WOODLAND":
+      if (r > 0.8)  return "LOG";
+      if (r > 0.6)  return "FERN";
+      if (r > 0.42) return "WEED";
+      if (r > 0.24) return "PEBBLE";
+      return "GRASS";
     case "CITY":
     case "CITY_DENSE":
       if (r > 0.82) return "TRASH";
@@ -14311,7 +14502,8 @@ function pickClutterType(def, rng) {
 
 function bakeChunkTerrain(biome, cx, cy, staticDecor) {
   const def = BIOMES[biome];
-  const p   = def.pal;
+  const lay = layoutFor(biome, cx, cy);
+  const p   = palFor(biome, cx, cy);
   const ox  = cx * CHUNK_W;
   const oy  = cy * CHUNK_W;
   const rng = makeRng(chunkHash(biome, cx, cy, 7));
@@ -14444,7 +14636,7 @@ function bakeChunkTerrain(biome, cx, cy, staticDecor) {
   g.push();
   g.scale(S);
   g.translate(-ox, -oy);
-  bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA);
+  bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA, p, lay);
 
   // Static clutter is stamped into the buffer here, so pebbles, trash, vines,
   // ferns, logs, bones and trees cost exactly zero draw calls at runtime.
@@ -14597,11 +14789,11 @@ function bakeStreet(g, x0, x1, my, edgeHalf, coreHalf, edgeCol, coreCol, layers,
   }
 }
 
-function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
-  const p = def.pal;
+function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA, pal, layout) {
+  const p = pal || def.pal;
   g.noStroke();
 
-  switch (def.layout) {
+  switch (layout || def.layout) {
 
     case "CITY":
     case "CITY_DENSE": {
@@ -15044,6 +15236,70 @@ function bakeBiomeDetail(g, def, biome, cx, cy, ox, oy, rng, sample, latA) {
       break;
     }
 
+    case "WOODLAND": {
+      // Meadow and shade. The base pass has already laid the grass; this is the
+      // structure on top of it -- where the canopy darkens the floor, where the
+      // ground opens out, and the track running through.
+      const canopy = bnoise(biome, ox, oy, 0.00055);
+
+      // Pools of shade under the standing timber, and lighter meadow where it
+      // thins. Radial and edge-free so neither reads as a painted patch.
+      const nShade = 6 + Math.round(canopy * 12);
+      for (let i = 0; i < nShade; i++) {
+        const rx = ox + rng() * CHUNK_W, ry = oy + rng() * CHUNK_W;
+        if (bnoise(biome, rx, ry, 0.0026) < 0.42) continue;
+        softStamp(g, rx, ry, 180 + rng() * 260, 150 + rng() * 220, [16, 30, 14], 16 + rng() * 20);
+      }
+      for (let i = 0; i < 7; i++) {
+        const rx = ox + rng() * CHUNK_W, ry = oy + rng() * CHUNK_W;
+        softStamp(g, rx, ry, 220 + rng() * 300, 180 + rng() * 260,
+                  [p.accent[0], p.accent[1], p.accent[2]], 14 + rng() * 16);
+      }
+
+      // The track. Narrower than a wagon road and greener at the edges: two
+      // ruts worn through turf rather than a graded carriageway.
+      const trackAtW = (wy) => woodTrailX(biome, cx, wy);
+      const S0w = -2, S1w = 26, SNw = 24;
+      const yAtW = (sIdx) => oy + (sIdx / SNw) * CHUNK_W;
+      bakeRibbon(g, trackAtW, yAtW, S0w, S1w, 96, 46,
+                 [110, 128, 78], [118, 100, 72], 12, 42);
+      g.stroke(p.mark[0], p.mark[1], p.mark[2], 120); g.strokeWeight(5); g.noFill();
+      for (const side of [-24, 24]) {
+        g.beginShape();
+        for (let sIdx = S0w; sIdx <= S1w; sIdx++) g.vertex(trackAtW(yAtW(sIdx)) + side, yAtW(sIdx));
+        g.endShape();
+      }
+      g.noStroke();
+
+      // Fallen leaf litter off the track, and the odd bare patch of earth.
+      const offTrack = (x, y) => Math.abs(x - trackAtW(y)) > 80;
+      for (let i = 0; i < 26; i++) {
+        const rx = ox + rng() * CHUNK_W, ry = oy + rng() * CHUNK_W;
+        if (!offTrack(rx, ry)) continue;
+        g.fill(126, 108, 62, 26 + rng() * 34);
+        g.ellipse(rx, ry, 16 + rng() * 42, 12 + rng() * 30);
+      }
+      for (let i = 0; i < 4; i++) {
+        const rx = ox + rng() * CHUNK_W, ry = oy + rng() * CHUNK_W;
+        if (!offTrack(rx, ry)) continue;
+        softStamp(g, rx, ry, 90 + rng() * 130, 70 + rng() * 100, [104, 86, 58], 26 + rng() * 22);
+      }
+
+      // A cleared apron under a Directive post, so the compound is not sitting
+      // in long grass.
+      if (cityIsCheckpoint(biome, cx, cy)) {
+        softStamp(g, ox, oy, 900, 900, [116, 104, 78], 58);
+        g.stroke(0, 0, 0, 30); g.strokeWeight(2);
+        for (let i = 0; i < 26; i++) {
+          const sx = ox + (rng() - 0.5) * 780, sy = oy + (rng() - 0.5) * 780;
+          const a = (rng() - 0.5) * 0.7;
+          g.line(sx, sy, sx + Math.cos(a) * (14 + rng() * 34), sy + Math.sin(a) * (14 + rng() * 34));
+        }
+        g.noStroke();
+      }
+      break;
+    }
+
     case "JUNGLE": {
       // --- Mud track --------------------------------------------------------
       // Same rule as the frontier trail: the centreline depends only on the
@@ -15303,7 +15559,7 @@ function settlementRoster(biome, cx, cy, solids) {
     }
   };
 
-  switch (def.layout) {
+  switch (layoutFor(biome, cx, cy)) {
     case "FRONTIER": {
       if (frontierIsTown(biome, ox, oy)) {
         // A high street works the way Dry Gulch does: townsfolk on the street
@@ -15345,7 +15601,8 @@ function settlementRoster(biome, cx, cy, solids) {
     }
 
     case "CITY":
-    case "CITY_DENSE": {
+    case "CITY_DENSE":
+    case "WOODLAND": {
       // A checkpoint is manned, and its garrison walks the arterial to the next
       // one. Hostile, so they count against the wanderer budget the same way the
       // loose patrols do -- clear a post and the sector gets quieter until you
@@ -15356,12 +15613,26 @@ function settlementRoster(biome, cx, cy, solids) {
       for (let i = 0; i < n; i++) {
         const pt = popPlace(rng, solids, ox - 260, ox + 260, oy - 260, oy + 260);
         if (!pt) continue;
-        // A checkpoint is manned by the sector's own people -- Stick City's
-        // men, the Undercity's women -- because these are exactly the ones the
-        // towers set free. The machines hold the road between the posts.
-        out.push({ type: biome === 2 ? "FEMALE_PISTOL" : (rng() > 0.78 ? "ARMORED_STANDARD" : "NORMAL"),
+        // Who mans a post depends on whether the sector's grid is still up.
+        //
+        //   Towers standing -- the sector's own people. Stick City's men, the
+        //   Undercity's women. These are exactly the ones the towers set free,
+        //   which is why they garrison rather than roam.
+        //
+        //   Towers down -- they are yours now, so NM-0 has nobody left but the
+        //   intake: blue-fatigue rookies, no helmets, no plates. They hold the
+        //   post and nothing else; the road between posts is the machines'.
+        const down = sectorTowersAreDown(biome);
+        const rookie = biome === 2 ? "NM0_ROOKIE_F" : "NM0_ROOKIE";
+        const regular = biome === 2 ? "FEMALE_PISTOL" : (rng() > 0.78 ? "ARMORED_STANDARD" : "NORMAL");
+        out.push({ type: down ? rookie : regular,
                    x: pt.x, y: pt.y,
-                   route: route, home: { x: ox, y: oy } });
+                   // A rookie is leashed to the post he was given. He does not
+                   // walk the arterial -- that was the regulars' beat, and they
+                   // are not NM-0's any more.
+                   route: down ? null : route,
+                   post: down ? { x: ox, y: oy } : null,
+                   home: { x: ox, y: oy } });
       }
       break;
     }
@@ -15460,6 +15731,7 @@ function refreshPopulation(mgr, pcx, pcy) {
           const c = new Character(r.x, r.y, false, r.type);
           if (c.eType !== "COW" && c.eType !== "HORSE") c.state = "PATROL";
           if (r.route) { c.routeA = r.home; c.routeB = r.route; c.routeLeg = 0; }
+          if (r.post)  { c.postX = r.post.x; c.postY = r.post.y; c.postR = 300; }
           enemiesList.push(c);
           list.push(c);
         }
@@ -15923,6 +16195,7 @@ function drawBiomeShadows() {
   const sr = sky[0] * 0.30, sg = sky[1] * 0.30, sb = sky[2] * 0.34;
   for (const b of activeBuildings) {
     if (b.isBiomeProp) continue;          // drawn with their own shadows later
+    if (b.isTreeTrunk) continue;          // the canopy casts it, not the trunk
     // activeBuildings is a 1500-unit ring rebuilt every ten frames, so most of
     // it is off screen. Every other pass culls; this one was painting a shadow
     // for all of them and letting the rasteriser clip, which on a fill-rate
